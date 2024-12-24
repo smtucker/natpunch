@@ -11,6 +11,11 @@ import (
 	"sync"
 )
 
+var (
+	mut      sync.Mutex
+	peerList []ClientInfo
+)
+
 func client(port string, address string) {
 	conn, err := net.ListenPacket("udp", ":0")
 	if err != nil {
@@ -21,9 +26,8 @@ func client(port string, address string) {
 	localAddr := conn.LocalAddr().String()
 	fmt.Println("Local address:", localAddr)
 
-	peerAddrStr := address + ":" + port
-	fmt.Println("Resolving address:", peerAddrStr)
-	peerAddr, err := net.ResolveUDPAddr("udp", peerAddrStr)
+	serverAddrStr := address + ":" + port
+	serverAddr, err := net.ResolveUDPAddr("udp", serverAddrStr)
 	if err != nil {
 		log.Fatal("Error resolving peer address:", err)
 	}
@@ -46,21 +50,21 @@ func client(port string, address string) {
 			err = json.Unmarshal(buffer[:n], &message)
 			if err != nil {
 				log.Println("Error unmarshaling message:", err)
-        log.Println("Received:", string(buffer[:n]))
+				log.Println("Received:", string(buffer[:n]))
 				continue
 			}
 
 			switch message.Command {
 			case ClientListResponseMessage.Command:
-				var clientList []ClientInfo
-				err = json.Unmarshal([]byte(message.Payload), &clientList)
+				mut.Lock()
+				err = json.Unmarshal([]byte(message.Payload), &peerList)
+				mut.Unlock()
 				if err != nil {
 					log.Println("Error unmarshaling client list:", err)
 					continue
 				}
-				fmt.Println("Client list:", clientList)
-				pingClientList(conn, clientList)
-      case "chat":
+				fmt.Println("Client list:", peerList)
+			case "chat":
 				fmt.Printf("Chat from %s: %s\n", addr, message.Payload)
 			default:
 				fmt.Printf("Received from %s: %s\n", addr, string(buffer[:n]))
@@ -79,23 +83,14 @@ func client(port string, address string) {
 			// Check for commands
 			switch message {
 			case "list":
-				_, err = conn.WriteTo(ClientListRequestBytes, peerAddr)
+				_, err = conn.WriteTo(ClientListRequestBytes, serverAddr)
 				if err != nil {
 					fmt.Println("Error sending client list request:", err)
 				}
 				continue
 			default:
-				var chatMsg = Message{Command: "chat", Payload: message}
-				chatMsgBytes, err := json.Marshal(chatMsg)
-				if err != nil {
-					fmt.Println("Error marshaling chat message:", err)
-					continue
-				}
-				_, err = conn.WriteTo(chatMsgBytes, peerAddr)
-				if err != nil {
-					log.Println("Error sending:", err)
-					break // Exit sending loop on error
-				}
+				messageClientList(conn, peerList, message)
+				messageClientList(conn, []ClientInfo{{Addr: serverAddr}}, message)
 			}
 		}
 	}()
@@ -103,15 +98,19 @@ func client(port string, address string) {
 	wg.Wait()
 }
 
-func pingClientList(conn net.PacketConn, clientList []ClientInfo) {
-	fmt.Println("Pinging all clients...")
+func messageClientList(conn net.PacketConn, clientList []ClientInfo, message string) {
+
+	msg := Message{Command: "chat", Payload: message}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("Error marshaling message:", err)
+		return
+	}
+
 	for _, client := range clientList {
-    msg := Message{Command: "chat", Payload: "Hello there!"}
-    msgBytes, err := json.Marshal(msg)
-    if err != nil {
-      log.Println("Error marshaling message:", err)
-      continue
-    }
-		conn.WriteTo(msgBytes, client.Addr)
+		_, err = conn.WriteTo(msgBytes, client.Addr)
+		if err != nil {
+			fmt.Printf("Error sending chat to %s: %s", client.Addr, err)
+		}
 	}
 }

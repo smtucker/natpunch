@@ -39,12 +39,13 @@ func Server(port string) {
 
 		clientAddrStr := addr.String()
 
-		mu.Lock()
+		// TODO: Add this to a register command
 		if _, ok := clients[clientAddrStr]; !ok {
+			mu.Lock()
 			clients[clientAddrStr] = &ClientInfo{Addr: addr}
 			fmt.Printf("Client connected: %s\n", clientAddrStr)
+			mu.Unlock()
 		}
-		mu.Unlock()
 
 		cmdMessage := Message{}
 		err = json.Unmarshal(buffer[:length], &cmdMessage)
@@ -54,13 +55,14 @@ func Server(port string) {
 			continue
 		}
 
-		if cmdMessage.Command == "clientListRequest" {
+		switch cmdMessage.Command {
+		case "chat":
+			fmt.Printf("Received chat message from %s: %s\n", addr, cmdMessage.Payload)
+		case "clientListRequest":
 			fmt.Println("Received client list request from:", addr)
 			sendClientList(conn, addr)
-		}
-
-		if cmdMessage.Command == "chat" {
-			fmt.Printf("Received chat message from %s: %s\n", addr, cmdMessage.Payload)
+    default:
+      fmt.Println("Unknown command:", string(buffer))
 		}
 	}
 }

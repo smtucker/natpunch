@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package nat_hole_punching;
+
+// Represents a network endpoint (IP address and port).
+message Endpoint {
+  string ip_address;
+  uint32 port;
+}
+
+// Messages exchanged between client and server.
+message Message {
+  oneof content {
+    RegisterRequest register_request;
+    RegisterResponse register_response;
+    ClientListRequest client_list_request;
+    ClientListResponse client_list_response;
+    ConnectRequest connect_request;
+    ConnectResponse connect_response;
+    ConnectionEstablished connection_established;
+    Error error;
+    KeepAlive keep_alive;
+    DebugMessage debug_message; // Added debug message
+  }
+}
+
+enum NatType {
+  UNKNOWN = 0;
+  FULL_CONE = 1;
+  RESTRICTED_CONE = 2;
+  PORT_RESTRICTED_CONE = 3;
+  SYMMETRIC = 4;
+}
+
+message ConnectRequest {
+  string destination_client_id;
+  Endpoint local_endpoint; // Include local endpoint
+  uint32 attempt_number;
+}
+
+message ConnectResponse {
+  bool accepted;
+  string message;
+  NatType nat_type; // Add NAT type
+    uint32 attempt_number;
+}
+
+message ConnectionEstablished {
+    string message; // Optional message
+}
+
+// Client registration request.
+message RegisterRequest {
+  string client_id; // Unique identifier for the client.
+  Endpoint public_endpoint; // Publicly reachable endpoint.
+  Endpoint local_endpoint; // local endpoint
+}
+
+// Client registration response.
+message RegisterResponse {
+  bool success;
+  string message; // Optional message (e.g., error details).
+}
+
+// Request for the list of registered clients.
+message ClientListRequest {
+  string request_id; // useful for matching responses to requests
+}
+
+// Response containing the list of registered clients.
+message ClientListResponse {
+  bool success;
+  string request_id;
+  repeated ClientInfo clients;
+  string message; // Optional message (e.g., error details).
+}
+
+// Information about a registered client.
+message ClientInfo {
+  string client_id;
+  Endpoint public_endpoint;
+}
+
+// Error message.
+message Error {
+  string message;
+}
+
+// Keep-alive message to maintain connection.
+message KeepAlive {
+}
+
+// Debug message for sending arbitrary text.
+message DebugMessage {
+  string message;
+}

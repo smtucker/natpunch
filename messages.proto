@@ -2,25 +2,23 @@ syntax = "proto3";
 
 package nat_hole_punching;
 
-// Represents a network endpoint (IP address and port).
 message Endpoint {
-  string ip_address;
-  uint32 port;
+  string ip_address = 1;
+  uint32 port = 2;
 }
 
-// Messages exchanged between client and server.
 message Message {
   oneof content {
-    RegisterRequest register_request;
-    RegisterResponse register_response;
-    ClientListRequest client_list_request;
-    ClientListResponse client_list_response;
-    ConnectRequest connect_request;
-    ConnectResponse connect_response;
-    ConnectionEstablished connection_established;
-    Error error;
-    KeepAlive keep_alive;
-    DebugMessage debug_message; // Added debug message
+    RegisterRequest register_request = 1;
+    RegisterResponse register_response = 2;
+    ClientListRequest client_list_request = 3;
+    ClientListResponse client_list_response = 4;
+    ConnectRequest connect_request = 5;
+    ConnectResponse connect_response = 6;
+    ConnectionEstablished connection_established = 7;
+    Error error = 8;
+    KeepAlive keep_alive = 9;
+    DebugMessage debug_message = 10;
   }
 }
 
@@ -33,64 +31,55 @@ enum NatType {
 }
 
 message ConnectRequest {
-  string destination_client_id;
-  Endpoint local_endpoint; // Include local endpoint
-  uint32 attempt_number;
+  string destination_client_id = 1;
+  Endpoint local_endpoint = 2;
+  uint32 attempt_number = 3;
 }
 
 message ConnectResponse {
-  bool accepted;
-  string message;
-  NatType nat_type; // Add NAT type
-    uint32 attempt_number;
+  bool accepted = 1;
+  string message = 2;
+  NatType nat_type = 3;
+  uint32 attempt_number = 4;
 }
 
 message ConnectionEstablished {
-    string message; // Optional message
+  string message = 1;
 }
 
-// Client registration request.
 message RegisterRequest {
-  string client_id; // Unique identifier for the client.
-  Endpoint public_endpoint; // Publicly reachable endpoint.
-  Endpoint local_endpoint; // local endpoint
+  string client_id = 1;
+  Endpoint public_endpoint = 2;
+  Endpoint local_endpoint = 3;
 }
 
-// Client registration response.
 message RegisterResponse {
-  bool success;
-  string message; // Optional message (e.g., error details).
+  bool success = 1;
+  string message = 2;
 }
 
-// Request for the list of registered clients.
 message ClientListRequest {
-  string request_id; // useful for matching responses to requests
+  string request_id = 1;
 }
 
-// Response containing the list of registered clients.
 message ClientListResponse {
-  bool success;
-  string request_id;
-  repeated ClientInfo clients;
-  string message; // Optional message (e.g., error details).
+  bool success = 1;
+  string request_id = 2;
+  repeated ClientInfo clients = 3;
+  string message = 4;
 }
 
-// Information about a registered client.
 message ClientInfo {
-  string client_id;
-  Endpoint public_endpoint;
+  string client_id = 1;
+  Endpoint public_endpoint = 2;
 }
 
-// Error message.
 message Error {
-  string message;
+  string message = 1;
 }
 
-// Keep-alive message to maintain connection.
-message KeepAlive {
-}
+message KeepAlive {}
 
-// Debug message for sending arbitrary text.
 message DebugMessage {
-  string message;
+  string message = 1;
 }

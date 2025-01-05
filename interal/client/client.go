@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"natpunch/pkg/api"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type Client struct {
@@ -18,7 +20,7 @@ type Client struct {
 	pubAddr *net.UDPAddr
 	stop    chan struct{}
 	wg      sync.WaitGroup
-	id      uuid.UUID
+	id      string
 }
 
 func (c *Client) dial(addr string, port string) error {
@@ -73,6 +75,39 @@ func (c *Client) readStdin() {
 	}
 }
 
+func (c *Client) keepAlive() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	msg := &api.Message{
+		Content: &api.Message_KeepAlive{
+			KeepAlive: &api.KeepAlive{
+				ClientId: c.id,
+			},
+		},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal keepalive:", err)
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+
+			_, err = c.conn.Write(out)
+			if err != nil {
+				log.Println("Failed to send keepalive:", err)
+			}
+
+		case <-c.stop:
+			c.wg.Done()
+			return
+		}
+	}
+}
+
 func (c *Client) Run(addr string, port string) {
 	err := c.dial(addr, port)
 	if err != nil {
@@ -81,7 +116,6 @@ func (c *Client) Run(addr string, port string) {
 	localAddr := c.conn.LocalAddr().(*net.UDPAddr)
 
 	c.stop = make(chan struct{})
-	c.id = uuid.New()
 
 	if err := c.register(localAddr); err != nil {
 		log.Println("Error registering:", err)
@@ -95,6 +129,9 @@ func (c *Client) Run(addr string, port string) {
 
 	c.wg.Add(1)
 	go c.readStdin()
+
+	c.wg.Add(1)
+	go c.keepAlive()
 
 	<-c.stop
 	log.Println("Closing connection")

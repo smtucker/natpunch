@@ -8,7 +8,6 @@ import (
 
 	"natpunch/pkg/api"
 
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -61,7 +60,7 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 
 		registerResponse := resp.RegisterResponse // Access the RegisterResponse message
 		if registerResponse.Success {
-			c.id = uuid.MustParse(registerResponse.ClientId)
+			c.id = registerResponse.ClientId
 			log.Println("Registered with server. ID:", c.id)
 			c.pubAddr = &net.UDPAddr{
 				IP:   net.ParseIP(registerResponse.PublicEndpoint.IpAddress),

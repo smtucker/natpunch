@@ -126,7 +126,21 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 }
 
 func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) {
-	// var ci *ClientInfo = s.Clients[msg.KeepAlive.ClientId]
+	ci, ok := s.Clients[msg.KeepAlive.ClientId]
+	if !ok {
+		log.Println("Received KeepAlive for unknown client:", msg.KeepAlive.ClientId)
+		return
+	}
+	if !ci.Addr.IP.Equal(addr.IP) {
+		log.Println(
+			"Received KeepAlive from different IP address:",
+			msg.KeepAlive.ClientId, "expected:", ci.Addr.IP,
+			"got:", addr.IP)
+		return
+	}
+
+	// If we got this far we have a valid client and should update the keep alive
 	s.mut.Lock()
+	ci.KeepAlive = time.Now()
 	defer s.mut.Unlock()
 }

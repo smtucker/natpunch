@@ -143,15 +143,10 @@ func (c *Client) Run(addr string, port string) {
 }
 
 func main() {
-	address := flag.String("a", "udp", "Server address")
+	address := flag.String("a", "127.0.0.1", "Server address")
 	port := flag.String("p", "8080", "Port to use")
 
 	flag.Parse()
-
-	if len(flag.Args()) != 1 {
-		fmt.Println("Usage: go run main.go [serve|connect]")
-		os.Exit(1)
-	}
 
 	client := &Client{}
 	client.Run(*address, *port)

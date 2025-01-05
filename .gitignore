@@ -7,6 +7,10 @@
 *.dll
 *.so
 *.dylib
+bin/
+
+# Generated protobuf code
+proto/gen/
 
 # Test binary, built with `go test -c`
 *.test

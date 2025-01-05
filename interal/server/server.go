@@ -18,6 +18,9 @@ import (
 // TODO: Make this configurable
 var bufferSize int = 1024
 
+// keepAliveTimeout is the duration after which a client is considered disconnected
+const keepAliveTimeout = 5 * time.Second
+
 // Struct to store client info
 type ClientInfo struct {
 	Addr      *net.UDPAddr
@@ -70,8 +73,23 @@ func (s *Server) Run(addr string, port string) {
 	log.Println("Shutdown complete")
 }
 
+func (s *Server) purgeClients() {
+	now := time.Now()
+	for id, client := range s.Clients {
+		if now.Sub(client.KeepAlive) > keepAliveTimeout {
+			log.Printf("Purging client %s due to inactivity", id)
+			s.mut.Lock()
+			delete(s.Clients, id)
+			s.mut.Unlock()
+		}
+	}
+}
+
 func (s *Server) listener() {
 	defer s.wg.Done()
+
+	purgeTicker := time.NewTicker(10 * time.Second)
+	defer purgeTicker.Stop()
 
 	buf := make([]byte, bufferSize)
 	for {
@@ -80,6 +98,8 @@ func (s *Server) listener() {
 		case <-s.stop:
 			log.Println("Shutting down listener")
 			return
+		case <-purgeTicker.C:
+			go s.purgeClients()
 		default:
 			n, addr, err := s.conn.ReadFromUDP(buf)
 			if err != nil {

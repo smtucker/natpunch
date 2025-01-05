@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Client is the client
 type Client struct {
 	conn    *net.UDPConn
 	srvAddr *net.UDPAddr
@@ -55,6 +56,18 @@ func (c *Client) listen() {
 				log.Println("Error reading:", err)
 				return
 			}
+
+			msg := &api.Message{}
+			if err := proto.Unmarshal(buf[:n], msg); err != nil {
+				log.Println("Failed to unmarshal message:", err)
+				return
+			}
+
+			if listResp, ok := msg.Content.(*api.Message_ClientListResponse); ok {
+				printClientList(listResp.ClientListResponse)
+				continue
+			}
+
 			fmt.Println("Received:", string(buf[:n]))
 		}
 	}
@@ -68,11 +81,15 @@ func (c *Client) readStdin() {
 		if text == "exit" {
 			close(c.stop) // Signal other goroutines to stop
 			return
+		} else if text == "list" {
+			c.sendClientListRequest()
+		} else {
+			_, err := c.conn.Write([]byte(text))
+			if err != nil {
+				log.Println("Error writing:", err)
+			}
 		}
-		_, err := c.conn.Write([]byte(text))
-		if err != nil {
-			log.Println("Error writing:", err)
-		}
+
 	}
 }
 
@@ -109,6 +126,32 @@ func (c *Client) keepAlive() {
 	}
 }
 
+func (c *Client) sendClientListRequest() {
+	req := &api.ClientListRequest{}
+	msg := &api.Message{
+		Content: &api.Message_ClientListRequest{ClientListRequest: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal list request:", err)
+		return
+	}
+
+	_, err = c.conn.Write(out)
+	if err != nil {
+		log.Println("Failed to send list request:", err)
+	}
+}
+
+func printClientList(resp *api.ClientListResponse) {
+	fmt.Println("Client List:")
+	for _, client := range resp.Clients {
+		fmt.Printf(" - %s: %s:%d\n", client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
+	}
+}
+
+// Run is the main method that initializes and starts running the client
 func (c *Client) Run(addr string, port string) {
 	err := c.dial(addr, port)
 	if err != nil {

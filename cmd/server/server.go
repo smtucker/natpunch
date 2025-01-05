@@ -17,18 +17,21 @@ import (
 )
 
 // TODO: Make this configurable
-var bufferSize int = 1024
+var bufferSize = 1024
 
 // keepAliveTimeout is the duration after which a client is considered disconnected
 const keepAliveTimeout = 5 * time.Second
 
-// Struct to store client info
+// ClientInfo is the truct to store client info
 type ClientInfo struct {
 	Addr      *net.UDPAddr
 	Type      api.NatType
 	KeepAlive time.Time
 }
 
+// Server is the main nat traversal middleman server
+// create a an empty server and call it's Run method to
+// initialize.
 type Server struct {
 	Clients map[string]*ClientInfo
 	Addr    *net.UDPAddr
@@ -135,6 +138,7 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 		s.registerClient(*content, addr)
 	case *api.Message_ClientListRequest:
 		log.Println("Received ClientListRequest:", content.ClientListRequest)
+		s.handleClientListRequest(content, addr)
 	case *api.Message_ConnectRequest:
 		log.Println("Received ConnectRequest:", content.ConnectRequest)
 	case *api.Message_KeepAlive:
@@ -144,6 +148,39 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 		log.Println("Received unknown message type:", content)
 	}
 	return nil
+}
+
+func (s *Server) handleClientListRequest(msg *api.Message_ClientListRequest, addr *net.UDPAddr) {
+	s.mut.RLock()
+	defer s.mut.RUnlock()
+
+	var clientList []*api.ClientInfo
+	for id, client := range s.Clients {
+		clientList = append(clientList, &api.ClientInfo{
+			ClientId: id,
+			PublicEndpoint: &api.Endpoint{
+				IpAddress: client.Addr.IP.String(),
+				Port:      uint32(client.Addr.Port),
+			},
+		})
+	}
+
+	resp := &api.ClientListResponse{
+		Success: true,
+		Clients: clientList,
+	}
+
+	data, err := proto.Marshal(&api.Message{
+		Content: &api.Message_ClientListResponse{ClientListResponse: resp},
+	})
+	if err != nil {
+		log.Println("Failed to marshal ClientListResponse:", err)
+		return
+	}
+
+	if _, err := s.conn.WriteToUDP(data, addr); err != nil {
+		log.Println("Failed to send ClientListResponse:", err)
+	}
 }
 
 func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) {

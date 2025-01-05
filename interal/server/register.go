@@ -14,7 +14,7 @@ import (
 // registerClient registers a client with the server generating
 // a uuid and saving the client in the client list
 func (s *Server) registerClient(msg api.Message_RegisterRequest, addr *net.UDPAddr) {
-	id := uuid.New()
+	id := uuid.New().String()
 	Client := ClientInfo{
 		Addr:      addr,
 		KeepAlive: time.Now(),
@@ -26,8 +26,8 @@ func (s *Server) registerClient(msg api.Message_RegisterRequest, addr *net.UDPAd
 	log.Println("Registered client:", id, "at address:", addr)
 
 	regResp := &api.RegisterResponse{
-		Success: true,
-		Id:      id.String(),
+		Success:  true,
+		ClientId: id,
 		PublicEndpoint: &api.Endpoint{
 			IpAddress: addr.IP.String(),
 			Port:      uint32(addr.Port),

@@ -12,7 +12,6 @@ import (
 
 	"natpunch/pkg/api"
 
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -27,7 +26,7 @@ type ClientInfo struct {
 }
 
 type Server struct {
-	Clients map[uuid.UUID]*ClientInfo
+	Clients map[string]*ClientInfo
 	Addr    *net.UDPAddr
 	conn    *net.UDPConn
 	stop    chan bool
@@ -37,7 +36,7 @@ type Server struct {
 
 func (s *Server) Run(addr string, port string) {
 	s.mut.Lock()
-	s.Clients = make(map[uuid.UUID]*ClientInfo)
+	s.Clients = make(map[string]*ClientInfo)
 
 	fullAddr := "127.0.0.1" + ":" + port
 	log.Println("Starting server on:", fullAddr)
@@ -119,8 +118,15 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 		log.Println("Received ConnectRequest:", content.ConnectRequest)
 	case *api.Message_KeepAlive:
 		log.Println("Received KeepAlive:", content.KeepAlive)
+		s.handleKeepAlive(content, addr)
 	default:
 		log.Println("Received unknown message type:", content)
 	}
 	return nil
+}
+
+func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) {
+	// var ci *ClientInfo = s.Clients[msg.KeepAlive.ClientId]
+	s.mut.Lock()
+	defer s.mut.Unlock()
 }

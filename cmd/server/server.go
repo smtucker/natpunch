@@ -1,6 +1,7 @@
-package server
+package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -10,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"natpunch/pkg/api"
+	api "natpunch/proto/gen/go"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -37,7 +38,7 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-func (s *Server) Run(addr string, port string) {
+func (s *Server) run(port string) {
 	s.mut.Lock()
 	s.Clients = make(map[string]*ClientInfo)
 
@@ -163,4 +164,13 @@ func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) 
 	s.mut.Lock()
 	ci.KeepAlive = time.Now()
 	defer s.mut.Unlock()
+}
+
+func main() {
+	port := flag.String("p", "8080", "Port to use")
+
+	flag.Parse()
+
+	srv := &Server{}
+	srv.run(*port)
 }

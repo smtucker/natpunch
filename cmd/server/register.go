@@ -1,11 +1,11 @@
-package server
+package main
 
 import (
 	"log"
 	"net"
 	"time"
 
-	"natpunch/pkg/api"
+	api "natpunch/proto/gen/go"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"

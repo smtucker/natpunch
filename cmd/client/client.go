@@ -1,7 +1,8 @@
-package client
+package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -9,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"natpunch/pkg/api"
+	api "natpunch/proto/gen/go"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -139,4 +140,19 @@ func (c *Client) Run(addr string, port string) {
 	c.wg.Wait()
 	c.conn.Close()
 	log.Println("Client exited")
+}
+
+func main() {
+	address := flag.String("a", "udp", "Server address")
+	port := flag.String("p", "8080", "Port to use")
+
+	flag.Parse()
+
+	if len(flag.Args()) != 1 {
+		fmt.Println("Usage: go run main.go [serve|connect]")
+		os.Exit(1)
+	}
+
+	client := &Client{}
+	client.Run(*address, *port)
 }

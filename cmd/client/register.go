@@ -1,4 +1,4 @@
-package client
+package main
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"natpunch/pkg/api"
+	api "natpunch/proto/gen/go"
 
 	"google.golang.org/protobuf/proto"
 )

@@ -56,7 +56,7 @@ message RegisterRequest {
 message RegisterResponse {
   bool success = 1;
   Endpoint public_endpoint = 2;
-  string id = 3;
+  string client_id = 3;
   string message = 4;
 }
 
@@ -76,6 +76,8 @@ message ClientInfo {
 
 message Error { string message = 1; }
 
-message KeepAlive {}
+message KeepAlive {
+  string client_id = 1;
+}
 
 message DebugMessage { string message = 1; }

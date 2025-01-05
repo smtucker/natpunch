@@ -1,6 +1,10 @@
 syntax = "proto3";
 
-package nat_hole_punching;
+package api;
+
+option go_package = "./pkg/api";
+
+import "google/protobuf/timestamp.proto";
 
 message Endpoint {
   string ip_address = 1;
@@ -43,24 +47,20 @@ message ConnectResponse {
   uint32 attempt_number = 4;
 }
 
-message ConnectionEstablished {
-  string message = 1;
-}
+message ConnectionEstablished { string message = 1; }
 
 message RegisterRequest {
-  string client_id = 1;
-  Endpoint public_endpoint = 2;
-  Endpoint local_endpoint = 3;
+  Endpoint local_endpoint = 1;
 }
 
 message RegisterResponse {
   bool success = 1;
-  string message = 2;
+  Endpoint public_endpoint = 2;
+  string id = 3;
+  string message = 4;
 }
 
-message ClientListRequest {
-  string request_id = 1;
-}
+message ClientListRequest { string request_id = 1; }
 
 message ClientListResponse {
   bool success = 1;
@@ -74,12 +74,8 @@ message ClientInfo {
   Endpoint public_endpoint = 2;
 }
 
-message Error {
-  string message = 1;
-}
+message Error { string message = 1; }
 
 message KeepAlive {}
 
-message DebugMessage {
-  string message = 1;
-}
+message DebugMessage { string message = 1; }

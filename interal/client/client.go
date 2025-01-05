@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bufio"
@@ -136,7 +136,7 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 	return fmt.Errorf("failed to register after 10 attempts")
 }
 
-func (c *Client) run(addr string, port string) {
+func (c *Client) Run(addr string, port string) {
 	err := c.dial(addr, port)
 	if err != nil {
 		panic(err)

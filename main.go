@@ -4,6 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"natpunch/interal/client"
+	"natpunch/interal/server"
 )
 
 func main() {
@@ -21,11 +24,11 @@ func main() {
 
 	switch command {
 	case "serve":
-		srv := &Server{}
+		srv := &server.Server{}
 		srv.Run(*address, *port)
 	case "client":
-		client := &Client{}
-		client.run(*address, *port)
+		client := &client.Client{}
+		client.Run(*address, *port)
 	default:
 		fmt.Println("Invalid command:", command)
 		os.Exit(1)

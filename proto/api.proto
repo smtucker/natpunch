@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package api;
 
-option go_package = "./pkg/api";
+option go_package = "natpunch/proto/gen/go/;api";
 
 import "google/protobuf/timestamp.proto";
 

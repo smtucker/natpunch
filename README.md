@@ -1,4 +1,4 @@
-# NAT Punchthrough Server & Client 🎮
+# NAT Holepunching Server & Client 🎮
 
 <p align="center" width="100%">
     <img src="https://github.com/user-attachments/assets/8ffd6bfe-ccdc-4dd1-9a46-25bb10d61438">

@@ -1,5 +1,9 @@
 # NAT Punchthrough Server & Client 🎮
 
+<p align="center" width="100%">
+    <img src="https://github.com/user-attachments/assets/8ffd6bfe-ccdc-4dd1-9a46-25bb10d61438">
+</p>
+
 **🚀 Blast through those pesky NATs and connect players worldwide! 🚀**
 
 This project is a powerful tool for indie game developers who want to add seamless online multiplayer functionality to their games.  

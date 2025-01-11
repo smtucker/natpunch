@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,12 +79,16 @@ func (c *Client) readStdin() {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		text := scanner.Text()
-		if text == "exit" {
+		tokens := strings.Fields(text)
+		switch tokens[0] {
+		case "exit":
 			close(c.stop) // Signal other goroutines to stop
 			return
-		} else if text == "list" {
+		case "list":
 			c.sendClientListRequest()
-		} else {
+		case "connect":
+			c.peerConnect(tokens[1])
+		default:
 			_, err := c.conn.Write([]byte(text))
 			if err != nil {
 				log.Println("Error writing:", err)
@@ -113,12 +118,10 @@ func (c *Client) keepAlive() {
 	for {
 		select {
 		case <-ticker.C:
-
 			_, err = c.conn.Write(out)
 			if err != nil {
 				log.Println("Failed to send keepalive:", err)
 			}
-
 		case <-c.stop:
 			c.wg.Done()
 			return
@@ -146,8 +149,8 @@ func (c *Client) sendClientListRequest() {
 
 func printClientList(resp *api.ClientListResponse) {
 	fmt.Println("Client List:")
-	for _, client := range resp.Clients {
-		fmt.Printf(" - %s: %s:%d\n", client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
+	for i, client := range resp.Clients {
+		fmt.Printf("%i - %s: %s:%d\n", i, client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
 	}
 }
 

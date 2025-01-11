@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,26 +19,44 @@ import (
 
 // Client is the client
 type Client struct {
-	conn    *net.UDPConn
-	srvAddr *net.UDPAddr
-	pubAddr *net.UDPAddr
-	stop    chan struct{}
-	wg      sync.WaitGroup
-	id      string
+	AvailablePeers []*peer
+	KnownPeers     map[string]*peer
+	conn           *net.UDPConn
+	srvAddr        *net.UDPAddr
+	pubAddr        *net.UDPAddr
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	id             string
 }
 
-func (c *Client) dial(addr string, port string) error {
-	var err error
-	c.srvAddr, err = net.ResolveUDPAddr("udp", addr+":"+port)
+func getLocalAddr() *net.UDPAddr {
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return err
+		panic(err)
 	}
-
-	c.conn, err = net.DialUDP("udp", nil, c.srvAddr)
-	if err != nil {
-		return err
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			log.Println("Local address found:", ipNet.IP)
+		}
 	}
-	return nil
+	if len(addrs) == 0 {
+		log.Fatal("No local address found")
+	}
+	if len(addrs) > 1 {
+		fmt.Println("Found multiple local addresses, select one to use:")
+		for i, addr := range addrs {
+			fmt.Printf("%d - %s\n", i, addr)
+		}
+		fmt.Print("Select address: ")
+		var selected int
+		fmt.Scan(&selected)
+		if selected < 0 || selected >= len(addrs) {
+			log.Fatal("Invalid address selected")
+		}
+		return &net.UDPAddr{IP: addrs[selected].(*net.IPNet).IP, Port: 0}
+	}
+	return &net.UDPAddr{IP: addrs[0].(*net.IPNet).IP, Port: 0}
 }
 
 func (c *Client) listen() {
@@ -49,7 +68,7 @@ func (c *Client) listen() {
 		case <-c.stop:
 			return
 		default:
-			n, _, err := c.conn.ReadFromUDP(buf)
+			n, addr, err := c.conn.ReadFromUDP(buf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
@@ -65,7 +84,23 @@ func (c *Client) listen() {
 			}
 
 			if listResp, ok := msg.Content.(*api.Message_ClientListResponse); ok {
-				printClientList(listResp.ClientListResponse)
+				// TODO: Make sure this came from the server
+				c.recieveClientList(listResp.ClientListResponse)
+				continue
+			}
+
+			if connectReq, ok := msg.Content.(*api.Message_ConnectRequest); ok {
+				c.handleConnectRequest(connectReq.ConnectRequest, addr)
+				continue
+			}
+
+			if connectResp, ok := msg.Content.(*api.Message_ConnectResponse); ok {
+				c.handleConnectResponse(connectResp.ConnectResponse, addr)
+				continue
+			}
+
+			if connectionEstablished, ok := msg.Content.(*api.Message_ConnectionEstablished); ok {
+				c.handleConnectionEstablished(connectionEstablished.ConnectionEstablished, addr)
 				continue
 			}
 
@@ -87,18 +122,20 @@ func (c *Client) readStdin() {
 		case "list":
 			c.sendClientListRequest()
 		case "connect":
-			c.peerConnect(tokens[1])
-		default:
-			_, err := c.conn.Write([]byte(text))
+			index, err := strconv.Atoi(tokens[1])
 			if err != nil {
-				log.Println("Error writing:", err)
+				log.Println("Invalid index:", err)
+				continue
 			}
+			c.peerConnect(c.AvailablePeers[index])
+		default:
+			log.Println("Unknown command:", tokens[0])
 		}
 
 	}
 }
 
-func (c *Client) keepAlive() {
+func (c *Client) keepAliveServer() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -118,7 +155,7 @@ func (c *Client) keepAlive() {
 	for {
 		select {
 		case <-ticker.C:
-			_, err = c.conn.Write(out)
+			_, err = c.conn.WriteTo(out, c.srvAddr)
 			if err != nil {
 				log.Println("Failed to send keepalive:", err)
 			}
@@ -141,33 +178,50 @@ func (c *Client) sendClientListRequest() {
 		return
 	}
 
-	_, err = c.conn.Write(out)
+	_, err = c.conn.WriteTo(out, c.srvAddr)
 	if err != nil {
 		log.Println("Failed to send list request:", err)
 	}
 }
 
-func printClientList(resp *api.ClientListResponse) {
+func (c *Client) recieveClientList(resp *api.ClientListResponse) {
 	fmt.Println("Client List:")
+	c.AvailablePeers = make([]*peer, len(resp.Clients))
 	for i, client := range resp.Clients {
-		fmt.Printf("%i - %s: %s:%d\n", i, client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
+		c.AvailablePeers[i] = &peer{
+			addr: &net.UDPAddr{
+				IP:   net.ParseIP(client.PublicEndpoint.IpAddress),
+				Port: int(client.PublicEndpoint.Port),
+			},
+			id: client.ClientId,
+		}
+		fmt.Printf("%d - %s: %s:%d\n", i, client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
 	}
 }
 
 // Run is the main method that initializes and starts running the client
 func (c *Client) Run(addr string, port string) {
-	err := c.dial(addr, port)
+	var err error
+	c.srvAddr, err = net.ResolveUDPAddr("udp", addr+":"+port)
 	if err != nil {
-		panic(err)
+		log.Fatalf("cannot resolve server address: %s", err)
 	}
-	localAddr := c.conn.LocalAddr().(*net.UDPAddr)
 
 	c.stop = make(chan struct{})
 
-	if err := c.register(localAddr); err != nil {
+	c.pubAddr = getLocalAddr()
+
+	c.conn, err = net.ListenUDP("udp", c.pubAddr)
+	if err != nil {
+		panic(err)
+	}
+
+	if err := c.register(c.pubAddr); err != nil {
 		log.Println("Error registering:", err)
 		return
 	}
+
+	c.KnownPeers = make(map[string]*peer)
 
 	c.wg = sync.WaitGroup{}
 
@@ -178,7 +232,7 @@ func (c *Client) Run(addr string, port string) {
 	go c.readStdin()
 
 	c.wg.Add(1)
-	go c.keepAlive()
+	go c.keepAliveServer()
 
 	<-c.stop
 	log.Println("Closing connection")

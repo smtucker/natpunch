@@ -30,7 +30,7 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 	}
 
 	for i := 0; i < 10; i++ {
-		_, err := c.conn.Write(out)
+		_, err = c.conn.WriteTo(out, c.srvAddr)
 		if err != nil {
 			return fmt.Errorf("write error: %w", err)
 		}
@@ -67,9 +67,8 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 				Port: int(registerResponse.PublicEndpoint.Port),
 			}
 			return nil
-		} else {
-			return fmt.Errorf("registration failed: %s", registerResponse.Message)
 		}
+		return fmt.Errorf("registration failed: %s", registerResponse.Message)
 	}
 	return fmt.Errorf("failed to register after 10 attempts")
 }

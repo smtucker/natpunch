@@ -36,18 +36,20 @@ enum NatType {
 
 message ConnectRequest {
   string destination_client_id = 1;
-  Endpoint local_endpoint = 2;
-  uint32 attempt_number = 3;
+  string source_client_id = 2;
+  Endpoint local_endpoint = 3;
+  uint32 attempt_number = 4;
 }
 
 message ConnectResponse {
   bool accepted = 1;
-  string message = 2;
-  NatType nat_type = 3;
-  uint32 attempt_number = 4;
+  string client_id =2;
+  string message = 3;
+  NatType nat_type = 4;
+  uint32 attempt_number = 5;
 }
 
-message ConnectionEstablished { string message = 1; }
+message ConnectionEstablished { string message = 1; string client_id = 2; }
 
 message RegisterRequest {
   Endpoint local_endpoint = 1;

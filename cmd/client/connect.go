@@ -10,36 +10,44 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type peerState int
+// PeerState represents the connection state of a peer.
+type PeerState int
 
+// Constants for peer connection states.
 const (
-	DISCONNECTED peerState = iota
+	DISCONNECTED PeerState = iota
 	PENDING
 	CONNECTED
 )
 
-type peer struct {
+// Peer represents a remote client.
+type Peer struct {
 	addr    *net.UDPAddr
 	natType api.NatType
 	id      string
-	state   peerState
+	state   PeerState
 }
 
-func (c *Client) peerConnect(newPeer *peer) {
-	if knownPeer, ok := c.KnownPeers[newPeer.id]; ok {
-		log.Println("Already know peer", knownPeer.id)
+// connectToPeer initiates a connection to the specified peer.
+func (c *Client) connectToPeer(peerToConnect *Peer) {
+	if _, ok := c.KnownPeers[peerToConnect.id]; ok {
+		log.Println("Already know peer", peerToConnect.id)
 		return
 	}
-	newPeer.state = PENDING
-	c.KnownPeers[newPeer.id] = newPeer
-	ticker := time.NewTicker(2 * time.Second)
+
+	peerToConnect.state = PENDING
+	c.KnownPeers[peerToConnect.id] = peerToConnect
+	ticker := time.NewTicker(KeepAliveInterval)
+	defer ticker.Stop()
+
 	ep := api.Endpoint{IpAddress: c.pubAddr.IP.String(), Port: uint32(c.pubAddr.Port)}
 	msg := &api.ConnectRequest{
 		SourceClientId:      c.id,
-		DestinationClientId: newPeer.id,
+		DestinationClientId: peerToConnect.id,
 		LocalEndpoint:       &ep,
 	}
-	for c.KnownPeers[newPeer.id].state == PENDING && msg.AttemptNumber < 10 {
+
+	for c.KnownPeers[peerToConnect.id].state == PENDING && msg.AttemptNumber < 10 { // Max connect attempts
 		msg.AttemptNumber++
 		fullMsg := &api.Message{
 			Content: &api.Message_ConnectRequest{ConnectRequest: msg},
@@ -49,7 +57,7 @@ func (c *Client) peerConnect(newPeer *peer) {
 			log.Println("Failed to marshal connect request:", err)
 			continue
 		}
-		_, err = c.conn.WriteTo(bytes, newPeer.addr)
+		_, err = c.conn.WriteTo(bytes, peerToConnect.addr)
 		if err != nil {
 			log.Println("Failed to send connect request:", err)
 		}
@@ -57,8 +65,8 @@ func (c *Client) peerConnect(newPeer *peer) {
 	}
 }
 
+// handleConnectResponse handles an incoming connection response from a peer.
 func (c *Client) handleConnectResponse(resp *api.ConnectResponse, addr *net.UDPAddr) {
-	// TODO: Implement spoofing checking
 	if peer, ok := c.KnownPeers[resp.ClientId]; ok {
 		if !peer.addr.IP.Equal(addr.IP) {
 			log.Println("Received ConnectResponse from different IP address:", resp.ClientId, "expected:", peer.addr.IP, "got:", addr.IP)
@@ -70,25 +78,25 @@ func (c *Client) handleConnectResponse(resp *api.ConnectResponse, addr *net.UDPA
 			Content: &api.Message_ConnectionEstablished{
 				ConnectionEstablished: &api.ConnectionEstablished{ClientId: c.id},
 			},
-		} //&api.ConnectionEstablished{ClientId: c.id}
+		}
 		bytes, _ := proto.Marshal(msg)
 		c.conn.WriteTo(bytes, addr)
 	}
 }
 
+// handleConnectRequest handles an incoming connection request from a peer.
 func (c *Client) handleConnectRequest(req *api.ConnectRequest, addr *net.UDPAddr) {
-	// TODO: Handle connect request
 	log.Println("ConnectRequest from peer:", req.SourceClientId, "at address:", addr)
 	msg := &api.Message{
 		Content: &api.Message_ConnectResponse{
 			ConnectResponse: &api.ConnectResponse{ClientId: c.id},
 		},
-	} //&api.ConnectResponse{ClientId: c.id}
+	}
 	bytes, _ := proto.Marshal(msg)
 	c.conn.WriteTo(bytes, addr)
 }
 
+// handleConnectionEstablished handles a connection established message from a peer.
 func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, addr *net.UDPAddr) {
-	// TODO: Handle connection established
 	log.Println("ConnectionEstablished from peer:", msg.ClientId, "at address:", addr)
 }

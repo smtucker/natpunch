@@ -61,6 +61,8 @@ func (c *Client) connectToPeer(peerToConnect *Peer) {
 		if err != nil {
 			log.Println("Failed to send connect request:", err)
 		}
+		log.Printf("sending connection request to %s, at %s, try #%d",
+			peerToConnect.id, peerToConnect.addr.IP.String(), msg.AttemptNumber)
 		<-ticker.C
 	}
 }

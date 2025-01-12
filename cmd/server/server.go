@@ -41,11 +41,11 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-func (s *Server) run(port string) {
+func (s *Server) run(addr string, port string) {
 	s.mut.Lock()
 	s.Clients = make(map[string]*ClientInfo)
 
-	fullAddr := "127.0.0.1" + ":" + port
+	fullAddr := addr + ":" + port
 	log.Println("Starting server on:", fullAddr)
 	Addr, err := net.ResolveUDPAddr("udp", fullAddr)
 	if err != nil {
@@ -204,10 +204,11 @@ func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) 
 }
 
 func main() {
+	addr := flag.String("a", "127.0.0.1", "Address to bind to")
 	port := flag.String("p", "8080", "Port to use")
 
 	flag.Parse()
 
 	srv := &Server{}
-	srv.run(*port)
+	srv.run(*addr, *port)
 }

@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	api "natpunch/proto/gen/go"
+	api "natpunch/proto"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -15,13 +15,18 @@ import (
 // a uuid and saving the client in the client list
 func (s *Server) registerClient(msg api.Message_RegisterRequest, addr *net.UDPAddr) {
 	id := uuid.New().String()
-	Client := ClientInfo{
-		Addr:      addr,
+	localAddr := &net.UDPAddr{
+		IP:   net.ParseIP(msg.RegisterRequest.LocalEndpoint.IpAddress),
+		Port: int(msg.RegisterRequest.LocalEndpoint.Port),
+	}
+	client := ClientInfo{
+		Addr:      addr, // This is the public endpoint of the client
+		LocalAddr: localAddr,
 		KeepAlive: time.Now(),
 		Type:      api.NatType_UNKNOWN,
 	}
 	s.mut.Lock()
-	s.Clients[id] = &Client
+	s.Clients[id] = &client
 	s.mut.Unlock()
 	log.Println("Registered client:", id, "at address:", addr)
 

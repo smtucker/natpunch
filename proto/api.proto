@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package api;
 
-option go_package = "natpunch/proto/gen/go/;api";
+option go_package = "natpunch/proto/;api";
 
 import "google/protobuf/timestamp.proto";
 
@@ -47,6 +47,8 @@ message ConnectResponse {
   string message = 3;
   NatType nat_type = 4;
   uint32 attempt_number = 5;
+  Endpoint public_endpoint = 6;
+  Endpoint local_endpoint = 7;
 }
 
 message ConnectionEstablished { string message = 1; string client_id = 2; }

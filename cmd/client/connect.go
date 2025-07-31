@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	api "natpunch/proto/gen/go"
+	api "natpunch/proto"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -22,10 +22,11 @@ const (
 
 // Peer represents a remote client.
 type Peer struct {
-	addr    *net.UDPAddr
-	natType api.NatType
-	id      string
-	state   PeerState
+	addr      *net.UDPAddr
+	localAddr *net.UDPAddr
+	natType   api.NatType
+	id        string
+	state     PeerState
 }
 
 // connectToPeer initiates a connection to the specified peer.
@@ -35,70 +36,139 @@ func (c *Client) connectToPeer(peerToConnect *Peer) {
 		return
 	}
 
+	log.Printf("Requesting connection to peer %s", peerToConnect.id)
 	peerToConnect.state = PENDING
 	c.KnownPeers[peerToConnect.id] = peerToConnect
-	ticker := time.NewTicker(KeepAliveInterval)
-	defer ticker.Stop()
 
-	ep := api.Endpoint{IpAddress: c.pubAddr.IP.String(), Port: uint32(c.pubAddr.Port)}
+	ep := api.Endpoint{IpAddress: c.localAddr.IP.String(), Port: uint32(c.localAddr.Port)}
 	msg := &api.ConnectRequest{
 		SourceClientId:      c.id,
 		DestinationClientId: peerToConnect.id,
 		LocalEndpoint:       &ep,
 	}
 
-	for c.KnownPeers[peerToConnect.id].state == PENDING && msg.AttemptNumber < 10 { // Max connect attempts
-		msg.AttemptNumber++
-		fullMsg := &api.Message{
-			Content: &api.Message_ConnectRequest{ConnectRequest: msg},
-		}
-		bytes, err := proto.Marshal(fullMsg)
-		if err != nil {
-			log.Println("Failed to marshal connect request:", err)
-			continue
-		}
-		_, err = c.conn.WriteTo(bytes, peerToConnect.addr)
-		if err != nil {
-			log.Println("Failed to send connect request:", err)
-		}
-		log.Printf("sending connection request to %s, at %s, try #%d",
-			peerToConnect.id, peerToConnect.addr.IP.String(), msg.AttemptNumber)
-		<-ticker.C
+	fullMsg := &api.Message{
+		Content: &api.Message_ConnectRequest{ConnectRequest: msg},
+	}
+	bytes, err := proto.Marshal(fullMsg)
+	if err != nil {
+		log.Println("Failed to marshal connect request:", err)
+		return
+	}
+	_, err = c.conn.WriteTo(bytes, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send connect request:", err)
+		delete(c.KnownPeers, peerToConnect.id)
+	} else {
+		log.Printf("Connection request for peer %s sent to server.", peerToConnect.id)
 	}
 }
 
 // handleConnectResponse handles an incoming connection response from a peer.
 func (c *Client) handleConnectResponse(resp *api.ConnectResponse, addr *net.UDPAddr) {
-	if peer, ok := c.KnownPeers[resp.ClientId]; ok {
-		if !peer.addr.IP.Equal(addr.IP) {
-			log.Println("Received ConnectResponse from different IP address:", resp.ClientId, "expected:", peer.addr.IP, "got:", addr.IP)
-			return
-		}
-		peer.state = CONNECTED
-		log.Println("ConnectionResponse from peer:", resp.ClientId, "at address:", addr)
-		msg := &api.Message{
-			Content: &api.Message_ConnectionEstablished{
-				ConnectionEstablished: &api.ConnectionEstablished{ClientId: c.id},
-			},
-		}
-		bytes, _ := proto.Marshal(msg)
-		c.conn.WriteTo(bytes, addr)
+	if !addr.IP.Equal(c.srvAddr.IP) || addr.Port != c.srvAddr.Port {
+		log.Printf("Received connect response from unexpected address: %s (expected %s)", addr, c.srvAddr)
+		return
 	}
-}
 
-// handleConnectRequest handles an incoming connection request from a peer.
-func (c *Client) handleConnectRequest(req *api.ConnectRequest, addr *net.UDPAddr) {
-	log.Println("ConnectRequest from peer:", req.SourceClientId, "at address:", addr)
-	msg := &api.Message{
-		Content: &api.Message_ConnectResponse{
-			ConnectResponse: &api.ConnectResponse{ClientId: c.id},
-		},
+	log.Printf("Received connect response for peer: %s", resp.ClientId)
+	peer, ok := c.KnownPeers[resp.ClientId]
+	if !ok {
+		log.Printf("Received connect info for peer we are not connecting to: %s. Adding to known peers.", resp.ClientId)
+		peer = &Peer{id: resp.ClientId}
+		c.KnownPeers[resp.ClientId] = peer
 	}
-	bytes, _ := proto.Marshal(msg)
-	c.conn.WriteTo(bytes, addr)
+
+	peer.addr = &net.UDPAddr{IP: net.ParseIP(resp.PublicEndpoint.IpAddress), Port: int(resp.PublicEndpoint.Port)}
+	peer.localAddr = &net.UDPAddr{IP: net.ParseIP(resp.LocalEndpoint.IpAddress), Port: int(resp.LocalEndpoint.Port)}
+	peer.state = PENDING
+
+	log.Printf("Starting hole punch for peer %s at %s (public) and %s (local)", peer.id, peer.addr, peer.localAddr)
+	go c.holePunch(peer)
 }
 
 // handleConnectionEstablished handles a connection established message from a peer.
 func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, addr *net.UDPAddr) {
 	log.Println("ConnectionEstablished from peer:", msg.ClientId, "at address:", addr)
+	peer, ok := c.KnownPeers[msg.ClientId]
+	if !ok {
+		log.Printf("Received ConnectionEstablished from unknown peer %s", msg.ClientId)
+		return
+	}
+
+	if peer.state == CONNECTED {
+		return // Already connected
+	}
+
+	peer.state = CONNECTED
+	log.Printf("Connection to peer %s established! Remote address is %s", msg.ClientId, addr)
+
+	// Send a confirmation back to the same address we received it from
+	reply := &api.Message{
+		Content: &api.Message_ConnectionEstablished{
+			ConnectionEstablished: &api.ConnectionEstablished{ClientId: c.id, Message: "Connection Confirmed!"},
+		},
+	}
+	bytes, _ := proto.Marshal(reply)
+	c.conn.WriteTo(bytes, addr)
+}
+
+// handleConnectRequest handles an incoming connection request from a peer.
+func (c *Client) handleConnectRequest(req *api.ConnectRequest, addr *net.UDPAddr) {
+}
+
+// holePunch performs NAT traversal by sending packets to the peer's public and local addresses.
+func (c *Client) holePunch(peer *Peer) {
+	log.Printf("Attempting to hole punch to peer %s", peer.id)
+	ticker := time.NewTicker(500 * time.Millisecond) // send packets every 500ms
+	defer ticker.Stop()
+
+	// Message to send for hole punching
+	msg := &api.Message{
+		Content: &api.Message_ConnectionEstablished{
+			ConnectionEstablished: &api.ConnectionEstablished{ClientId: c.id, Message: "Hole Punch"},
+		},
+	}
+	bytes, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal hole punch message: %v", err)
+		return
+	}
+
+	// Attempt to punch for 10 seconds
+	timeout := time.After(10 * time.Second)
+
+	for {
+		// Check if we are already connected
+		if p, ok := c.KnownPeers[peer.id]; ok && p.state == CONNECTED {
+			log.Printf("Hole punch to %s successful", peer.id)
+			return
+		}
+
+		select {
+		case <-timeout:
+			log.Printf("Hole punch to %s timed out", peer.id)
+			// Maybe set peer state back to disconnected
+			peer.state = DISCONNECTED
+			return
+		case <-ticker.C:
+			// Send to public address
+			_, err := c.conn.WriteTo(bytes, peer.addr)
+			if err != nil {
+				log.Printf("Failed to send hole punch to public addr %s: %v", peer.addr, err)
+			} else {
+				log.Printf("Sent hole punch packet to public %s", peer.addr)
+			}
+
+			// Send to local address if it's different
+			if peer.localAddr != nil && (peer.localAddr.IP.String() != peer.addr.IP.String() || peer.localAddr.Port != peer.addr.Port) {
+				_, err = c.conn.WriteTo(bytes, peer.localAddr)
+				if err != nil {
+					log.Printf("Failed to send hole punch to local addr %s: %v", peer.localAddr, err)
+				} else {
+					log.Printf("Sent hole punch packet to local %s", peer.localAddr)
+				}
+			}
+		}
+	}
 }

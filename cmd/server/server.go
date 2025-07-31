@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	api "natpunch/proto/gen/go"
+	api "natpunch/proto"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -25,6 +25,7 @@ const keepAliveTimeout = 5 * time.Second
 // ClientInfo is the truct to store client info
 type ClientInfo struct {
 	Addr      *net.UDPAddr
+	LocalAddr *net.UDPAddr
 	Type      api.NatType
 	KeepAlive time.Time
 }
@@ -140,7 +141,7 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 		log.Println("Received ClientListRequest:", content.ClientListRequest)
 		s.handleClientListRequest(content, addr)
 	case *api.Message_ConnectRequest:
-		log.Println("Received ConnectRequest:", content.ConnectRequest)
+		s.handleConnectRequest(content, addr)
 	case *api.Message_KeepAlive:
 		log.Println("Received KeepAlive:", content.KeepAlive)
 		s.handleKeepAlive(content, addr)
@@ -180,6 +181,69 @@ func (s *Server) handleClientListRequest(msg *api.Message_ClientListRequest, add
 
 	if _, err := s.conn.WriteToUDP(data, addr); err != nil {
 		log.Println("Failed to send ClientListResponse:", err)
+	}
+}
+
+func (s *Server) handleConnectRequest(msg *api.Message_ConnectRequest, addr *net.UDPAddr) {
+	req := msg.ConnectRequest
+	log.Printf("Handling ConnectRequest from %s to %s", req.SourceClientId, req.DestinationClientId)
+
+	s.mut.RLock()
+	sourceClient, sourceOk := s.Clients[req.SourceClientId]
+	destClient, destOk := s.Clients[req.DestinationClientId]
+	s.mut.RUnlock()
+
+	if !sourceOk {
+		log.Printf("ConnectRequest from unknown client: %s", req.SourceClientId)
+		return
+	}
+
+	if !sourceClient.Addr.IP.Equal(addr.IP) || sourceClient.Addr.Port != addr.Port {
+		log.Printf("ConnectRequest from %s has mismatched address. Expected %s, got %s", req.SourceClientId, sourceClient.Addr.String(), addr.String())
+		return
+	}
+
+	if !destOk {
+		log.Printf("Destination client not found: %s", req.DestinationClientId)
+		// TODO: Send an error response back to the source client
+		return
+	}
+
+	// Send connection details of the destination to the source
+	s.sendConnectResponse(sourceClient.Addr, req.DestinationClientId, destClient)
+
+	// Send connection details of the source to the destination
+	s.sendConnectResponse(destClient.Addr, req.SourceClientId, sourceClient)
+	log.Printf("Exchanged endpoint information between %s and %s", req.SourceClientId, req.DestinationClientId)
+}
+
+func (s *Server) sendConnectResponse(recipientAddr *net.UDPAddr, peerID string, peerInfo *ClientInfo) {
+	resp := &api.ConnectResponse{
+		Accepted: true,
+		ClientId: peerID,
+		PublicEndpoint: &api.Endpoint{
+			IpAddress: peerInfo.Addr.IP.String(),
+			Port:      uint32(peerInfo.Addr.Port),
+		},
+		LocalEndpoint: &api.Endpoint{
+			IpAddress: peerInfo.LocalAddr.IP.String(),
+			Port:      uint32(peerInfo.LocalAddr.Port),
+		},
+	}
+
+	msg := &api.Message{
+		Content: &api.Message_ConnectResponse{ConnectResponse: resp},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal ConnectResponse for %s: %v", recipientAddr, err)
+		return
+	}
+
+	_, err = s.conn.WriteToUDP(out, recipientAddr)
+	if err != nil {
+		log.Printf("Failed to send ConnectResponse to %s: %v", recipientAddr, err)
 	}
 }
 

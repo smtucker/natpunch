@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	api "natpunch/proto/gen/go"
+	api "natpunch/proto"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -30,6 +30,7 @@ type Client struct {
 	conn           *net.UDPConn
 	srvAddr        *net.UDPAddr
 	pubAddr        *net.UDPAddr
+	localAddr      *net.UDPAddr
 	stop           chan struct{}
 	wg             sync.WaitGroup
 	id             string
@@ -224,14 +225,21 @@ func (c *Client) Run(addr string, port string) {
 
 	c.stop = make(chan struct{})
 
-	c.pubAddr = getLocalAddr()
+	c.localAddr = getLocalAddr()
 
-	c.conn, err = net.ListenUDP("udp", c.pubAddr)
+	c.conn, err = net.ListenUDP("udp", c.localAddr)
 	if err != nil {
 		panic(err)
 	}
 
-	if err := c.register(c.pubAddr); err != nil {
+	// Update local address with the port chosen by the OS
+	localAddrWithPort, ok := c.conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		log.Fatalf("could not get local UDP address")
+	}
+	c.localAddr = localAddrWithPort
+
+	if err := c.register(c.localAddr); err != nil {
 		log.Println("Error registering:", err)
 		return
 	}

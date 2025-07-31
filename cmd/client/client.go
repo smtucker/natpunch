@@ -109,6 +109,19 @@ func (c *Client) listen() {
 				c.handleConnectResponse(content.ConnectResponse, addr)
 			case *api.Message_ConnectionEstablished:
 				c.handleConnectionEstablished(content.ConnectionEstablished, addr)
+			case *api.Message_Error:
+				log.Printf("Server error: %s", content.Error.Message)
+			case *api.Message_DebugMessage:
+				// Respond to ping messages
+				if content.DebugMessage.Message == "PING" {
+					pongMsg := &api.Message{
+						Content: &api.Message_DebugMessage{
+							DebugMessage: &api.DebugMessage{Message: "PONG"},
+						},
+					}
+					pongBytes, _ := proto.Marshal(pongMsg)
+					c.conn.WriteTo(pongBytes, addr)
+				}
 			default:
 				fmt.Println("Received:", string(buf[:n]))
 			}

@@ -205,7 +205,8 @@ func (s *Server) handleConnectRequest(msg *api.Message_ConnectRequest, addr *net
 
 	if !destOk {
 		log.Printf("Destination client not found: %s", req.DestinationClientId)
-		// TODO: Send an error response back to the source client
+		// Send an error response back to the source client
+		s.sendErrorResponse(sourceClient.Addr, fmt.Sprintf("Destination client %s not found", req.DestinationClientId))
 		return
 	}
 
@@ -265,6 +266,27 @@ func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) 
 	s.mut.Lock()
 	ci.KeepAlive = time.Now()
 	defer s.mut.Unlock()
+}
+
+func (s *Server) sendErrorResponse(recipientAddr *net.UDPAddr, errorMessage string) {
+	resp := &api.Error{
+		Message: errorMessage,
+	}
+
+	msg := &api.Message{
+		Content: &api.Message_Error{Error: resp},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal Error response: %v", err)
+		return
+	}
+
+	_, err = s.conn.WriteToUDP(out, recipientAddr)
+	if err != nil {
+		log.Printf("Failed to send Error response to %s: %v", recipientAddr, err)
+	}
 }
 
 func main() {

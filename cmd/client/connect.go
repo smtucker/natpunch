@@ -111,10 +111,38 @@ func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, add
 	}
 	bytes, _ := proto.Marshal(reply)
 	c.conn.WriteTo(bytes, addr)
+
+	// Start connection verification
+	go c.verifyConnection(peer, addr)
 }
 
 // handleConnectRequest handles an incoming connection request from a peer.
 func (c *Client) handleConnectRequest(req *api.ConnectRequest, addr *net.UDPAddr) {
+	log.Printf("Received connection request from %s", req.SourceClientId)
+
+	// Create a new peer entry if we don't know about this client
+	peer, exists := c.KnownPeers[req.SourceClientId]
+	if !exists {
+		peer = &Peer{
+			id:    req.SourceClientId,
+			addr:  addr,
+			state: PENDING,
+		}
+		c.KnownPeers[req.SourceClientId] = peer
+	} else {
+		peer.state = PENDING
+	}
+
+	// Update peer's local endpoint if provided
+	if req.LocalEndpoint != nil {
+		peer.localAddr = &net.UDPAddr{
+			IP:   net.ParseIP(req.LocalEndpoint.IpAddress),
+			Port: int(req.LocalEndpoint.Port),
+		}
+	}
+
+	log.Printf("Starting hole punch for incoming connection from %s", req.SourceClientId)
+	go c.holePunch(peer)
 }
 
 // holePunch performs NAT traversal by sending packets to the peer's public and local addresses.
@@ -169,6 +197,53 @@ func (c *Client) holePunch(peer *Peer) {
 					log.Printf("Sent hole punch packet to local %s", peer.localAddr)
 				}
 			}
+		}
+	}
+}
+
+// verifyConnection sends periodic ping messages to verify the connection is still alive
+func (c *Client) verifyConnection(peer *Peer, addr *net.UDPAddr) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	pingMsg := &api.Message{
+		Content: &api.Message_DebugMessage{
+			DebugMessage: &api.DebugMessage{Message: "PING"},
+		},
+	}
+	pingBytes, _ := proto.Marshal(pingMsg)
+
+	for {
+		select {
+		case <-ticker.C:
+			if peer.state != CONNECTED {
+				log.Printf("Peer %s disconnected, stopping verification", peer.id)
+				return
+			}
+
+			start := time.Now()
+			_, err := c.conn.WriteTo(pingBytes, addr)
+			if err != nil {
+				log.Printf("Failed to send ping to %s: %v", peer.id, err)
+				peer.state = DISCONNECTED
+				return
+			}
+
+			// Set a short timeout for ping response
+			c.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			respBuf := make([]byte, 1024)
+			_, respAddr, err := c.conn.ReadFromUDP(respBuf)
+			if err != nil {
+				log.Printf("No ping response from %s: %v", peer.id, err)
+				continue
+			}
+
+			if respAddr.IP.Equal(addr.IP) && respAddr.Port == addr.Port {
+				latency := time.Since(start)
+				log.Printf("Ping to %s: %v", peer.id, latency)
+			}
+		case <-c.stop:
+			return
 		}
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	api "natpunch/proto"
+	api "natpunch/proto/gen/go"
 
 	"google.golang.org/protobuf/proto"
 )

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	api "natpunch/proto"
+	api "natpunch/proto/gen/go"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -25,15 +25,27 @@ const KeepAliveInterval = 2 * time.Second
 
 // Client represents the NAT traversal client.
 type Client struct {
-	AvailablePeers []*Peer
-	KnownPeers     map[string]*Peer
-	conn           *net.UDPConn
-	srvAddr        *net.UDPAddr
-	pubAddr        *net.UDPAddr
-	localAddr      *net.UDPAddr
-	stop           chan struct{}
-	wg             sync.WaitGroup
-	id             string
+	AvailablePeers   []*Peer
+	KnownPeers       map[string]*Peer
+	AvailableLobbies []*LobbyInfo
+	CurrentLobby     *LobbyInfo
+	conn             *net.UDPConn
+	srvAddr          *net.UDPAddr
+	pubAddr          *net.UDPAddr
+	localAddr        *net.UDPAddr
+	stop             chan struct{}
+	wg               sync.WaitGroup
+	id               string
+}
+
+// LobbyInfo represents lobby information for the client
+type LobbyInfo struct {
+	ID             string
+	Name           string
+	HostClientID   string
+	CurrentPlayers uint32
+	MaxPlayers     uint32
+	Members        []*api.ClientInfo
 }
 
 // getLocalAddr retrieves the local UDP address.
@@ -122,6 +134,14 @@ func (c *Client) listen() {
 					pongBytes, _ := proto.Marshal(pongMsg)
 					c.conn.WriteTo(pongBytes, addr)
 				}
+			case *api.Message_CreateLobbyResponse:
+				c.handleCreateLobbyResponse(content.CreateLobbyResponse)
+			case *api.Message_JoinLobbyResponse:
+				c.handleJoinLobbyResponse(content.JoinLobbyResponse)
+			case *api.Message_LobbyListResponse:
+				c.handleLobbyListResponse(content.LobbyListResponse)
+			case *api.Message_LobbyUpdate:
+				c.handleLobbyUpdate(content.LobbyUpdate)
 			default:
 				fmt.Println("Received:", string(buf[:n]))
 			}
@@ -156,6 +176,34 @@ func (c *Client) readStdin() {
 				continue
 			}
 			c.connectToPeer(c.AvailablePeers[index])
+		case "lobbies":
+			c.sendLobbyListRequest()
+		case "create":
+			if len(tokens) < 3 {
+				log.Println("Usage: create <lobby_name> <max_players>")
+				continue
+			}
+			maxPlayers, err := strconv.ParseUint(tokens[2], 10, 32)
+			if err != nil {
+				log.Println("Invalid max players:", err)
+				continue
+			}
+			c.createLobby(tokens[1], uint32(maxPlayers))
+		case "join":
+			if len(tokens) < 2 {
+				log.Println("Usage: join <lobby_index>")
+				continue
+			}
+			index, err := strconv.Atoi(tokens[1])
+			if err != nil {
+				log.Println("Invalid index:", err)
+				continue
+			}
+			if index < 0 || index >= len(c.AvailableLobbies) {
+				log.Println("Lobby index out of range")
+				continue
+			}
+			c.joinLobby(c.AvailableLobbies[index])
 		default:
 			log.Println("Unknown command:", tokens[0])
 		}
@@ -212,6 +260,69 @@ func (c *Client) sendClientListRequest() {
 	}
 }
 
+func (c *Client) sendLobbyListRequest() {
+	req := &api.LobbyListRequest{
+		RequestId: fmt.Sprintf("req_%d", time.Now().UnixNano()),
+	}
+	msg := &api.Message{
+		Content: &api.Message_LobbyListRequest{LobbyListRequest: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal lobby list request:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send lobby list request:", err)
+	}
+}
+
+func (c *Client) createLobby(name string, maxPlayers uint32) {
+	req := &api.CreateLobbyRequest{
+		LobbyName:  name,
+		ClientId:   c.id,
+		MaxPlayers: maxPlayers,
+	}
+	msg := &api.Message{
+		Content: &api.Message_CreateLobbyRequest{CreateLobbyRequest: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal create lobby request:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send create lobby request:", err)
+	}
+}
+
+func (c *Client) joinLobby(lobby *LobbyInfo) {
+	req := &api.JoinLobbyRequest{
+		LobbyId:  lobby.ID,
+		ClientId: c.id,
+	}
+	msg := &api.Message{
+		Content: &api.Message_JoinLobbyRequest{JoinLobbyRequest: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal join lobby request:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send join lobby request:", err)
+	}
+}
+
 // receiveClientList processes the client list received from the server.
 func (c *Client) receiveClientList(resp *api.ClientListResponse) {
 	fmt.Println("Client List:")
@@ -225,6 +336,75 @@ func (c *Client) receiveClientList(resp *api.ClientListResponse) {
 			id: client.ClientId,
 		}
 		fmt.Printf("%d - %s: %s:%d\n", i, client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
+	}
+}
+
+func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
+	if resp.Success {
+		fmt.Printf("✅ Lobby created successfully! Lobby ID: %s\n", resp.LobbyId)
+	} else {
+		fmt.Printf("❌ Failed to create lobby: %s\n", resp.Message)
+	}
+}
+
+func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
+	if resp.Success {
+		fmt.Printf("✅ Successfully joined lobby %s!\n", resp.LobbyId)
+		fmt.Printf("📋 Lobby members (%d):\n", len(resp.LobbyMembers))
+		for i, member := range resp.LobbyMembers {
+			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
+		}
+
+		// Convert to local LobbyInfo
+		c.CurrentLobby = &LobbyInfo{
+			ID:             resp.LobbyId,
+			Members:        resp.LobbyMembers,
+			CurrentPlayers: uint32(len(resp.LobbyMembers)),
+		}
+	} else {
+		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
+	}
+}
+
+func (c *Client) handleLobbyListResponse(resp *api.LobbyListResponse) {
+	if resp.Success {
+		fmt.Println("📋 Available Lobbies:")
+		c.AvailableLobbies = make([]*LobbyInfo, len(resp.Lobbies))
+		for i, lobby := range resp.Lobbies {
+			c.AvailableLobbies[i] = &LobbyInfo{
+				ID:             lobby.LobbyId,
+				Name:           lobby.LobbyName,
+				HostClientID:   lobby.HostClientId,
+				CurrentPlayers: lobby.CurrentPlayers,
+				MaxPlayers:     lobby.MaxPlayers,
+				Members:        lobby.Members,
+			}
+			fmt.Printf("%d - %s (Host: %s, Players: %d/%d)\n",
+				i, lobby.LobbyName, lobby.HostClientId, lobby.CurrentPlayers, lobby.MaxPlayers)
+		}
+	} else {
+		fmt.Printf("❌ Failed to get lobby list: %s\n", resp.Message)
+	}
+}
+
+func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
+	fmt.Printf("🔄 Lobby update for %s: %s\n", update.LobbyId, update.UpdateType)
+
+	// Update current lobby if it matches
+	if c.CurrentLobby != nil && c.CurrentLobby.ID == update.LobbyId {
+		c.CurrentLobby = &LobbyInfo{
+			ID:             update.LobbyInfo.LobbyId,
+			Name:           update.LobbyInfo.LobbyName,
+			HostClientID:   update.LobbyInfo.HostClientId,
+			CurrentPlayers: update.LobbyInfo.CurrentPlayers,
+			MaxPlayers:     update.LobbyInfo.MaxPlayers,
+			Members:        update.LobbyInfo.Members,
+		}
+
+		fmt.Printf("📋 Updated lobby members (%d):\n", len(update.LobbyInfo.Members))
+		for i, member := range update.LobbyInfo.Members {
+			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
+		}
 	}
 }
 

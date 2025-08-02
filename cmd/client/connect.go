@@ -64,17 +64,17 @@ func (c *Client) connectToPeer(peerToConnect *Peer) {
 	}
 }
 
-// handleConnectResponse handles an incoming connection response from a peer.
-func (c *Client) handleConnectResponse(resp *api.ConnectResponse, addr *net.UDPAddr) {
+// handleConnectionInstruction handles an incoming connection instruction from the server.
+func (c *Client) handleConnectionInstruction(resp *api.ConnectionInstruction, addr *net.UDPAddr) {
 	if !addr.IP.Equal(c.srvAddr.IP) || addr.Port != c.srvAddr.Port {
-		log.Printf("Received connect response from unexpected address: %s (expected %s)", addr, c.srvAddr)
+		log.Printf("Received connection instruction from unexpected address: %s (expected %s)", addr, c.srvAddr)
 		return
 	}
 
-	log.Printf("Received connect response for peer: %s", resp.ClientId)
+	log.Printf("Received connection instruction for peer: %s", resp.ClientId)
 	peer, ok := c.KnownPeers[resp.ClientId]
 	if !ok {
-		log.Printf("Received connect info for peer we are not connecting to: %s. Adding to known peers.", resp.ClientId)
+		log.Printf("Received connection info for peer we are not connecting to: %s. Adding to known peers.", resp.ClientId)
 		peer = &Peer{id: resp.ClientId}
 		c.KnownPeers[resp.ClientId] = peer
 	}
@@ -114,35 +114,6 @@ func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, add
 
 	// Start connection verification
 	go c.verifyConnection(peer, addr)
-}
-
-// handleConnectRequest handles an incoming connection request from a peer.
-func (c *Client) handleConnectRequest(req *api.ConnectRequest, addr *net.UDPAddr) {
-	log.Printf("Received connection request from %s", req.SourceClientId)
-
-	// Create a new peer entry if we don't know about this client
-	peer, exists := c.KnownPeers[req.SourceClientId]
-	if !exists {
-		peer = &Peer{
-			id:    req.SourceClientId,
-			addr:  addr,
-			state: PENDING,
-		}
-		c.KnownPeers[req.SourceClientId] = peer
-	} else {
-		peer.state = PENDING
-	}
-
-	// Update peer's local endpoint if provided
-	if req.LocalEndpoint != nil {
-		peer.localAddr = &net.UDPAddr{
-			IP:   net.ParseIP(req.LocalEndpoint.IpAddress),
-			Port: int(req.LocalEndpoint.Port),
-		}
-	}
-
-	log.Printf("Starting hole punch for incoming connection from %s", req.SourceClientId)
-	go c.holePunch(peer)
 }
 
 // holePunch performs NAT traversal by sending packets to the peer's public and local addresses.

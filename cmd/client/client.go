@@ -115,10 +115,8 @@ func (c *Client) listen() {
 			switch content := msg.Content.(type) {
 			case *api.Message_ClientListResponse:
 				c.receiveClientList(content.ClientListResponse)
-			case *api.Message_ConnectRequest:
-				c.handleConnectRequest(content.ConnectRequest, addr)
-			case *api.Message_ConnectResponse:
-				c.handleConnectResponse(content.ConnectResponse, addr)
+			case *api.Message_ConnectionInstruction:
+				c.handleConnectionInstruction(content.ConnectionInstruction, addr)
 			case *api.Message_ConnectionEstablished:
 				c.handleConnectionEstablished(content.ConnectionEstablished, addr)
 			case *api.Message_Error:
@@ -142,6 +140,10 @@ func (c *Client) listen() {
 				c.handleLobbyListResponse(content.LobbyListResponse)
 			case *api.Message_LobbyUpdate:
 				c.handleLobbyUpdate(content.LobbyUpdate)
+			case *api.Message_Ping:
+				c.handlePing(content.Ping, addr)
+			case *api.Message_Pong:
+				c.handlePong(content.Pong, addr)
 			default:
 				fmt.Println("Received:", string(buf[:n]))
 			}
@@ -158,6 +160,10 @@ func (c *Client) readStdin() {
 		text := scanner.Text()
 		tokens := strings.Fields(text)
 
+		if len(tokens) == 0 {
+			continue
+		}
+
 		switch tokens[0] {
 		case "exit":
 			close(c.stop)
@@ -165,6 +171,10 @@ func (c *Client) readStdin() {
 		case "list":
 			c.sendClientListRequest()
 		case "connect":
+			if len(tokens) < 2 {
+				log.Println("Usage: connect <client_index>")
+				continue
+			}
 			index, err := strconv.Atoi(tokens[1])
 			if err != nil {
 				log.Println("Invalid index:", err)
@@ -204,6 +214,23 @@ func (c *Client) readStdin() {
 				continue
 			}
 			c.joinLobby(c.AvailableLobbies[index])
+		case "ping":
+			if len(tokens) < 2 {
+				log.Println("Usage: ping <client_index>")
+				continue
+			}
+			index, err := strconv.Atoi(tokens[1])
+			if err != nil {
+				log.Println("Invalid index:", err)
+				continue
+			}
+			if index < 0 || index >= len(c.AvailablePeers) {
+				log.Println("Index out of range")
+				continue
+			}
+			c.sendPing(c.AvailablePeers[index])
+		case "help":
+			c.printHelp()
 		default:
 			log.Println("Unknown command:", tokens[0])
 		}
@@ -408,6 +435,72 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 	}
 }
 
+func (c *Client) sendPing(peer *Peer) {
+	ping := &api.Ping{
+		SourceClientId:      c.id,
+		DestinationClientId: peer.id,
+		SequenceNumber:      uint32(time.Now().UnixNano()),
+	}
+	msg := &api.Message{
+		Content: &api.Message_Ping{Ping: ping},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal ping:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, peer.addr)
+	if err != nil {
+		log.Println("Failed to send ping:", err)
+	} else {
+		log.Printf("Ping sent to %s", peer.id)
+	}
+}
+
+func (c *Client) handlePing(ping *api.Ping, addr *net.UDPAddr) {
+	log.Printf("Received ping from %s", ping.SourceClientId)
+
+	pong := &api.Pong{
+		SourceClientId:      c.id,
+		DestinationClientId: ping.SourceClientId,
+		SequenceNumber:      ping.SequenceNumber,
+	}
+	msg := &api.Message{
+		Content: &api.Message_Pong{Pong: pong},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal pong:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, addr)
+	if err != nil {
+		log.Println("Failed to send pong:", err)
+	}
+}
+
+func (c *Client) handlePong(pong *api.Pong, addr *net.UDPAddr) {
+	log.Printf("Received pong from %s", pong.SourceClientId)
+}
+
+func (c *Client) printHelp() {
+	fmt.Println("Available commands:")
+	fmt.Println("  list - list available clients")
+	fmt.Println("  connect <index> - connect to a client by index")
+	fmt.Println("  ping <index> - ping a client by index")
+	fmt.Println("  lobbies - list available lobbies")
+	fmt.Println("  create <name> <max_players> - create a lobby")
+	fmt.Println("  join <index> - join a lobby by index")
+	fmt.Println("  help - print this help message")
+	fmt.Println("  exit - exit the client")
+}
+
+
+
 // Run starts the client.
 func (c *Client) Run(addr string, port string) {
 	var err error
@@ -438,6 +531,8 @@ func (c *Client) Run(addr string, port string) {
 	}
 
 	c.KnownPeers = make(map[string]*Peer)
+
+	c.printHelp()
 
 	c.wg = sync.WaitGroup{}
 

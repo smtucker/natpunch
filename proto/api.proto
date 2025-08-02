@@ -18,7 +18,7 @@ message Message {
     ClientListRequest client_list_request = 3;
     ClientListResponse client_list_response = 4;
     ConnectRequest connect_request = 5;
-    ConnectResponse connect_response = 6;
+    ConnectionInstruction connection_instruction = 6;
     ConnectionEstablished connection_established = 7;
     Error error = 8;
     KeepAlive keep_alive = 9;
@@ -30,6 +30,8 @@ message Message {
     LobbyListRequest lobby_list_request = 15;
     LobbyListResponse lobby_list_response = 16;
     LobbyUpdate lobby_update = 17;
+    Ping ping = 18;
+    Pong pong = 19;
   }
 }
 
@@ -48,9 +50,9 @@ message ConnectRequest {
   uint32 attempt_number = 4;
 }
 
-message ConnectResponse {
+message ConnectionInstruction {
   bool accepted = 1;
-  string client_id =2;
+  string client_id = 2;
   string message = 3;
   NatType nat_type = 4;
   uint32 attempt_number = 5;
@@ -58,7 +60,10 @@ message ConnectResponse {
   Endpoint local_endpoint = 7;
 }
 
-message ConnectionEstablished { string message = 1; string client_id = 2; }
+message ConnectionEstablished {
+  string message = 1;
+  string client_id = 2;
+}
 
 message RegisterRequest {
   Endpoint local_endpoint = 1;
@@ -142,3 +147,16 @@ message LobbyUpdate {
   LobbyInfo lobby_info = 2;
   string update_type = 3; // "player_joined", "player_left", "lobby_closed"
 }
+
+message Ping {
+  string source_client_id = 1;
+  string destination_client_id = 2;
+  uint32 sequence_number = 3;
+}
+
+message Pong {
+  string source_client_id = 1;
+  string destination_client_id = 2;
+  uint32 sequence_number = 3;
+}
+

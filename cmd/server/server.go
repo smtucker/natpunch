@@ -232,15 +232,15 @@ func (s *Server) handleConnectRequest(msg *api.Message_ConnectRequest, addr *net
 	}
 
 	// Send connection details of the destination to the source
-	s.sendConnectResponse(sourceClient.Addr, req.DestinationClientId, destClient)
+	s.sendConnectionInstruction(sourceClient.Addr, req.DestinationClientId, destClient)
 
 	// Send connection details of the source to the destination
-	s.sendConnectResponse(destClient.Addr, req.SourceClientId, sourceClient)
+	s.sendConnectionInstruction(destClient.Addr, req.SourceClientId, sourceClient)
 	log.Printf("Exchanged endpoint information between %s and %s", req.SourceClientId, req.DestinationClientId)
 }
 
-func (s *Server) sendConnectResponse(recipientAddr *net.UDPAddr, peerID string, peerInfo *ClientInfo) {
-	resp := &api.ConnectResponse{
+func (s *Server) sendConnectionInstruction(recipientAddr *net.UDPAddr, peerID string, peerInfo *ClientInfo) {
+	resp := &api.ConnectionInstruction{
 		Accepted: true,
 		ClientId: peerID,
 		PublicEndpoint: &api.Endpoint{
@@ -254,18 +254,18 @@ func (s *Server) sendConnectResponse(recipientAddr *net.UDPAddr, peerID string, 
 	}
 
 	msg := &api.Message{
-		Content: &api.Message_ConnectResponse{ConnectResponse: resp},
+		Content: &api.Message_ConnectionInstruction{ConnectionInstruction: resp},
 	}
 
 	out, err := proto.Marshal(msg)
 	if err != nil {
-		log.Printf("Failed to marshal ConnectResponse for %s: %v", recipientAddr, err)
+		log.Printf("Failed to marshal ConnectionInstruction for %s: %v", recipientAddr, err)
 		return
 	}
 
 	_, err = s.conn.WriteToUDP(out, recipientAddr)
 	if err != nil {
-		log.Printf("Failed to send ConnectResponse to %s: %v", recipientAddr, err)
+		log.Printf("Failed to send ConnectionInstruction to %s: %v", recipientAddr, err)
 	}
 }
 

@@ -9,10 +9,23 @@
 This project is a powerful tool for indie game developers who want to add seamless online multiplayer functionality to their games.  
 We're building a robust NAT traversal solution that's easy to integrate and packed with features.
 
-## **✨ Currently in Early Development ✨**
+## **✨ MVP Ready! ✨**
 
-This project is just getting started, but check back often! We're actively working on this project, adding exciting new features and improving existing ones.
-While it's still in its very early stages, the core functionality is in place and ready for you to experiment with!
+The core NAT punching functionality is now implemented and ready for testing! This MVP includes:
+
+✅ **Working Features:**
+- Client registration and discovery
+- NAT punching between peers
+- Connection establishment and verification
+- Error handling and logging
+- Keep-alive mechanism
+- **Lobby system for game matching**
+- **Automatic peer connection when joining lobbies**
+- Test scripts for validation
+
+🧪 **Ready to Test:**
+- Run `./test_mvp.sh` for basic NAT punching
+- Run `./test_lobby.sh` for lobby system testing
 
 ## **💪 What We Offer**
 
@@ -57,6 +70,34 @@ It's super easy to get started! Just run `make` in the root directory to build t
 ```
 
 (Replace `<server_address>` with the server's IP address and `<port>` with the server's port number.)
+
+## Client Commands
+
+The client supports the following commands:
+
+- `list`: Lists all clients registered with the server.
+- `connect <index>`: Connects to a client by its index from the `list` command.
+- `ping <index>`: Pings a client by its index to verify a direct connection.
+- `lobbies`: Lists all available lobbies.
+- `create <name> <max_players>`: Creates a new lobby.
+- `join <index>`: Joins a lobby by its index from the `lobbies` command.
+- `help`: Displays a list of available commands.
+- `exit`: Exits the client.
+
+## Testing
+
+The `test_mvp.sh` and `test_lobby.sh` scripts can be used to test the NAT punching and lobby functionality.
+
+Once connected, you can use the `ping` command to verify that a direct peer-to-peer connection has been established.
+
+**Example:**
+
+1.  Run `./test_mvp.sh` to start the server and two clients.
+2.  In one client, type `list` to see the other client's index.
+3.  Type `connect <index>` to initiate the NAT punch-through.
+4.  Type `ping <index>` to send a direct ping to the other client.
+
+A successful ping will be logged in both clients, confirming a direct connection.
 
 ## **🙌 Join the Community**
 

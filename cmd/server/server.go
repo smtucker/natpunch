@@ -560,39 +560,12 @@ func (s *Server) triggerLobbyConnections(lobby *LobbyInfo, newPlayerID string) {
 		if memberID != newPlayerID {
 			log.Printf("Triggering connection between %s and %s in lobby %s", newPlayerID, memberID, lobby.ID)
 
-			// Send connect request from new player to existing member
-			s.sendConnectRequest(newPlayer.Addr, newPlayerID, memberID, newPlayer.LocalAddr)
+			// Send connection instruction to new player for existing member
+			s.sendConnectionInstruction(newPlayer.Addr, memberID, memberClient)
 
-			// Send connect request from existing member to new player
-			s.sendConnectRequest(memberClient.Addr, memberID, newPlayerID, memberClient.LocalAddr)
+			// Send connection instruction to existing member for new player
+			s.sendConnectionInstruction(memberClient.Addr, newPlayerID, newPlayer)
 		}
-	}
-}
-
-func (s *Server) sendConnectRequest(recipientAddr *net.UDPAddr, sourceID, destID string, localEndpoint *net.UDPAddr) {
-	req := &api.ConnectRequest{
-		SourceClientId:      sourceID,
-		DestinationClientId: destID,
-		LocalEndpoint: &api.Endpoint{
-			IpAddress: localEndpoint.IP.String(),
-			Port:      uint32(localEndpoint.Port),
-		},
-		AttemptNumber: 1,
-	}
-
-	msg := &api.Message{
-		Content: &api.Message_ConnectRequest{ConnectRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Printf("Failed to marshal ConnectRequest: %v", err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, recipientAddr)
-	if err != nil {
-		log.Printf("Failed to send ConnectRequest: %v", err)
 	}
 }
 

@@ -29,6 +29,7 @@ type Client struct {
 	KnownPeers       map[string]*Peer
 	AvailableLobbies []*LobbyInfo
 	CurrentLobby     *LobbyInfo
+	pendingPings     map[uint32]time.Time
 	conn             *net.UDPConn
 	srvAddr          *net.UDPAddr
 	pubAddr          *net.UDPAddr
@@ -436,10 +437,11 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 }
 
 func (c *Client) sendPing(peer *Peer) {
+	seq := uint32(time.Now().UnixNano())
 	ping := &api.Ping{
 		SourceClientId:      c.id,
 		DestinationClientId: peer.id,
-		SequenceNumber:      uint32(time.Now().UnixNano()),
+		SequenceNumber:      seq,
 	}
 	msg := &api.Message{
 		Content: &api.Message_Ping{Ping: ping},
@@ -456,6 +458,7 @@ func (c *Client) sendPing(peer *Peer) {
 		log.Println("Failed to send ping:", err)
 	} else {
 		log.Printf("Ping sent to %s", peer.id)
+		c.pendingPings[seq] = time.Now()
 	}
 }
 
@@ -484,7 +487,13 @@ func (c *Client) handlePing(ping *api.Ping, addr *net.UDPAddr) {
 }
 
 func (c *Client) handlePong(pong *api.Pong, addr *net.UDPAddr) {
-	log.Printf("Received pong from %s", pong.SourceClientId)
+	if startTime, ok := c.pendingPings[pong.SequenceNumber]; ok {
+		latency := time.Since(startTime)
+		log.Printf("Received pong from %s, latency: %s", pong.SourceClientId, latency)
+		delete(c.pendingPings, pong.SequenceNumber)
+	} else {
+		log.Printf("Received pong from %s with unknown sequence number", pong.SourceClientId)
+	}
 }
 
 func (c *Client) printHelp() {
@@ -531,6 +540,7 @@ func (c *Client) Run(addr string, port string) {
 	}
 
 	c.KnownPeers = make(map[string]*Peer)
+	c.pendingPings = make(map[uint32]time.Time)
 
 	c.printHelp()
 

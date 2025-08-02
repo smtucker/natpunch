@@ -177,13 +177,6 @@ func (c *Client) verifyConnection(peer *Peer, addr *net.UDPAddr) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	pingMsg := &api.Message{
-		Content: &api.Message_DebugMessage{
-			DebugMessage: &api.DebugMessage{Message: "PING"},
-		},
-	}
-	pingBytes, _ := proto.Marshal(pingMsg)
-
 	for {
 		select {
 		case <-ticker.C:
@@ -191,28 +184,7 @@ func (c *Client) verifyConnection(peer *Peer, addr *net.UDPAddr) {
 				log.Printf("Peer %s disconnected, stopping verification", peer.id)
 				return
 			}
-
-			start := time.Now()
-			_, err := c.conn.WriteTo(pingBytes, addr)
-			if err != nil {
-				log.Printf("Failed to send ping to %s: %v", peer.id, err)
-				peer.state = DISCONNECTED
-				return
-			}
-
-			// Set a short timeout for ping response
-			c.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			respBuf := make([]byte, 1024)
-			_, respAddr, err := c.conn.ReadFromUDP(respBuf)
-			if err != nil {
-				log.Printf("No ping response from %s: %v", peer.id, err)
-				continue
-			}
-
-			if respAddr.IP.Equal(addr.IP) && respAddr.Port == addr.Port {
-				latency := time.Since(start)
-				log.Printf("Ping to %s: %v", peer.id, latency)
-			}
+			c.sendPing(peer)
 		case <-c.stop:
 			return
 		}

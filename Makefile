@@ -24,7 +24,7 @@ client: $(CLIENT_SRC) $(PROTO_GEN_DIR)
 # Rule to generate protobuf Go code
 $(PROTO_GEN_DIR): $(PROTO_DIR)/api.proto
 	mkdir -p $(PROTO_GEN_DIR)
-	$(PROTOC) --go_out=$(PROTO_GEN_DIR) -I./proto --go_opt=paths=source_relative api.proto
+	$(PROTOC) --go_out=./ --go_opt=module=natpunch -I./proto --go_opt=Mapi.proto=natpunch/proto/gen/go ./proto/api.proto
 
 # Rule to clean up generated files and binaries
 clean:

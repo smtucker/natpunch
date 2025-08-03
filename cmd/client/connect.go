@@ -63,13 +63,25 @@ func (c *Client) handleConnectionInstruction(resp *api.ConnectionInstruction, ad
 		return
 	}
 
-	log.Printf("Received connection instruction for peer: %s", resp.ClientId)
+	if c.CurrentLobby == nil {
+		log.Println("Received connection instruction while not in a lobby, ignoring.")
+		return
+	}
+
+	c.lobbyMutex.Lock()
+	defer c.lobbyMutex.Unlock()
+
 	peer := &Peer{
 		id:        resp.ClientId,
 		addr:      &net.UDPAddr{IP: net.ParseIP(resp.PublicEndpoint.IpAddress), Port: int(resp.PublicEndpoint.Port)},
 		localAddr: &net.UDPAddr{IP: net.ParseIP(resp.LocalEndpoint.IpAddress), Port: int(resp.LocalEndpoint.Port)},
 		state:     PENDING,
 	}
+
+	if _, ok := c.CurrentLobby.Peers[peer.id]; !ok {
+		c.CurrentLobby.Peers[peer.id] = peer
+	}
+
 
 	log.Printf("Starting hole punch for peer %s at %s (public) and %s (local)", peer.id, peer.addr, peer.localAddr)
 	go c.holePunch(peer)
@@ -78,6 +90,8 @@ func (c *Client) handleConnectionInstruction(resp *api.ConnectionInstruction, ad
 // handleConnectionEstablished handles a connection established message from a peer.
 func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, addr *net.UDPAddr) {
 	log.Println("ConnectionEstablished from peer:", msg.ClientId, "at address:", addr)
+	c.lobbyMutex.Lock()
+	defer c.lobbyMutex.Unlock()
 	if peer, ok := c.CurrentLobby.Peers[msg.ClientId]; ok {
 		if peer.state == CONNECTED {
 			return // Already connected

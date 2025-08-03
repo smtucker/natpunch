@@ -34,6 +34,7 @@ type Client struct {
 	localAddr        *net.UDPAddr
 	stop             chan struct{}
 	wg               sync.WaitGroup
+	lobbyMutex       sync.Mutex
 	id               string
 }
 
@@ -175,11 +176,14 @@ func (c *Client) readStdin() {
 			close(c.stop)
 			return
 		case "list":
+			c.lobbyMutex.Lock()
 			if c.CurrentLobby == nil {
+				c.lobbyMutex.Unlock()
 				log.Println("You are not in a lobby. Join a lobby to see other clients.")
 				return
 			}
 			c.listLobbyMembers()
+			c.lobbyMutex.Unlock()
 
 		case "connect":
 			if len(tokens) < 2 {
@@ -192,7 +196,9 @@ func (c *Client) readStdin() {
 				continue
 			}
 
+			c.lobbyMutex.Lock()
 			if index < 0 || index >= len(c.CurrentLobby.Members) {
+				c.lobbyMutex.Unlock()
 				log.Println("Index out of range")
 				continue
 			}
@@ -203,6 +209,7 @@ func (c *Client) readStdin() {
 				},
 				id: c.CurrentLobby.Members[index].ClientId,
 			}
+			c.lobbyMutex.Unlock()
 			c.connectToPeer(peer)
 
 		case "lobbies":
@@ -236,7 +243,9 @@ func (c *Client) readStdin() {
 		case "leave":
 			c.leaveLobby()
 		case "members":
+			c.lobbyMutex.Lock()
 			c.listLobbyMembers()
+			c.lobbyMutex.Unlock()
 		case "ping":
 			if len(tokens) < 2 {
 				log.Println("Usage: ping <client_index>")
@@ -247,7 +256,9 @@ func (c *Client) readStdin() {
 				log.Println("Invalid index:", err)
 				continue
 			}
+			c.lobbyMutex.Lock()
 			if index < 0 || index >= len(c.CurrentLobby.Members) {
+				c.lobbyMutex.Unlock()
 				log.Println("Index out of range")
 				continue
 			}
@@ -258,6 +269,7 @@ func (c *Client) readStdin() {
 				},
 				id: c.CurrentLobby.Members[index].ClientId,
 			}
+			c.lobbyMutex.Unlock()
 			c.sendPing(peer)
 
 		case "help":
@@ -387,6 +399,9 @@ func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
 			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
 		}
 
+		c.lobbyMutex.Lock()
+		defer c.lobbyMutex.Unlock()
+
 		// Convert to local LobbyInfo
 		c.CurrentLobby = &LobbyInfo{
 			ID:             resp.LobbyId,
@@ -434,6 +449,8 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 
 	// Update current lobby if it matches
 	if c.CurrentLobby != nil && c.CurrentLobby.ID == update.LobbyId {
+		c.lobbyMutex.Lock()
+		defer c.lobbyMutex.Unlock()
 		c.CurrentLobby = &LobbyInfo{
 			ID:             update.LobbyInfo.LobbyId,
 			Name:           update.LobbyInfo.LobbyName,
@@ -461,6 +478,8 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 	}
 }
 func (c *Client) leaveLobby() {
+	c.lobbyMutex.Lock()
+	defer c.lobbyMutex.Unlock()
 	if c.CurrentLobby == nil {
 		log.Println("Not in a lobby")
 		return
@@ -488,6 +507,8 @@ func (c *Client) leaveLobby() {
 
 func (c *Client) handleLeaveLobbyResponse(resp *api.LeaveLobbyResponse) {
 	if resp.Success {
+		c.lobbyMutex.Lock()
+		defer c.lobbyMutex.Unlock()
 		fmt.Printf("✅ Left lobby successfully!\n")
 		c.CurrentLobby = nil
 	} else {
@@ -496,6 +517,8 @@ func (c *Client) handleLeaveLobbyResponse(resp *api.LeaveLobbyResponse) {
 }
 
 func (c *Client) handlePeerLeft(resp *api.PeerLeft) {
+	c.lobbyMutex.Lock()
+	defer c.lobbyMutex.Unlock()
 	if c.CurrentLobby == nil {
 		return
 	}

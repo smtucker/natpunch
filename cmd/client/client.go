@@ -49,8 +49,6 @@ type LobbyInfo struct {
 	Peers          map[string]*Peer
 }
 
-
-
 // getLocalAddr retrieves the local UDP address.
 func getLocalAddr() *net.UDPAddr {
 	addrs, err := net.InterfaceAddrs()
@@ -157,125 +155,135 @@ func (c *Client) listen() {
 	}
 }
 
-
 // readStdin reads commands from standard input.
 func (c *Client) readStdin() {
 	defer c.wg.Done()
 	scanner := bufio.NewScanner(os.Stdin)
 
-	for scanner.Scan() {
-		text := scanner.Text()
-		tokens := strings.Fields(text)
-
-		if len(tokens) == 0 {
-			continue
-		}
-
-		switch tokens[0] {
-		case "exit":
-			close(c.stop)
+	for {
+		select {
+		case <-c.stop:
 			return
-		case "list":
-			c.lobbyMutex.Lock()
-			if c.CurrentLobby == nil {
-				c.lobbyMutex.Unlock()
-				log.Println("You are not in a lobby. Join a lobby to see other clients.")
-				return
-			}
-			c.listLobbyMembers()
-			c.lobbyMutex.Unlock()
-
-		case "connect":
-			if len(tokens) < 2 {
-				log.Println("Usage: connect <client_index>")
-				continue
-			}
-			index, err := strconv.Atoi(tokens[1])
-			if err != nil {
-				log.Println("Invalid index:", err)
-				continue
-			}
-
-			c.lobbyMutex.Lock()
-			if index < 0 || index >= len(c.CurrentLobby.Members) {
-				c.lobbyMutex.Unlock()
-				log.Println("Index out of range")
-				continue
-			}
-			peer := &Peer{
-				addr: &net.UDPAddr{
-					IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
-					Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
-				},
-				id: c.CurrentLobby.Members[index].ClientId,
-			}
-			c.lobbyMutex.Unlock()
-			c.connectToPeer(peer)
-
-		case "lobbies":
-			c.sendLobbyListRequest()
-		case "create":
-			if len(tokens) < 3 {
-				log.Println("Usage: create <lobby_name> <max_players>")
-				continue
-			}
-			maxPlayers, err := strconv.ParseUint(tokens[2], 10, 32)
-			if err != nil {
-				log.Println("Invalid max players:", err)
-				continue
-			}
-			c.createLobby(tokens[1], uint32(maxPlayers))
-		case "join":
-			if len(tokens) < 2 {
-				log.Println("Usage: join <lobby_index>")
-				continue
-			}
-			index, err := strconv.Atoi(tokens[1])
-			if err != nil {
-				log.Println("Invalid index:", err)
-				continue
-			}
-			if index < 0 || index >= len(c.AvailableLobbies) {
-				log.Println("Lobby index out of range")
-				continue
-			}
-			c.joinLobby(c.AvailableLobbies[index])
-		case "leave":
-			c.leaveLobby()
-		case "members":
-			c.lobbyMutex.Lock()
-			c.listLobbyMembers()
-			c.lobbyMutex.Unlock()
-		case "ping":
-			if len(tokens) < 2 {
-				log.Println("Usage: ping <client_index>")
-				continue
-			}
-			index, err := strconv.Atoi(tokens[1])
-			if err != nil {
-				log.Println("Invalid index:", err)
-				continue
-			}
-			c.lobbyMutex.Lock()
-			if index < 0 || index >= len(c.CurrentLobby.Members) {
-				c.lobbyMutex.Unlock()
-				log.Println("Index out of range")
-				continue
-			}
-			peer := &Peer{
-				addr: &net.UDPAddr{
-					IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
-					Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
-				},
-				id: c.CurrentLobby.Members[index].ClientId,
-			}
-			c.lobbyMutex.Unlock()
-			c.sendPing(peer)
-
-		case "help":
-			c.printHelp()
 		default:
-			log.Println("Unknown command:", tokens[0])
+			if scanner.Scan() {
+				text := scanner.Text()
+				fmt.Println("Read from stdin:", text)
+				tokens := strings.Fields(text)
+
+				if len(tokens) == 0 {
+					continue
+				}
+
+				switch tokens[0] {
+				case "exit":
+					close(c.stop)
+					return
+				case "list":
+					c.lobbyMutex.Lock()
+					if c.CurrentLobby == nil {
+						c.lobbyMutex.Unlock()
+						log.Println("You are not in a lobby. Join a lobby to see other clients.")
+						return
+					}
+					c.listLobbyMembers()
+					c.lobbyMutex.Unlock()
+
+				case "connect":
+					if len(tokens) < 2 {
+						log.Println("Usage: connect <client_index>")
+						continue
+					}
+					index, err := strconv.Atoi(tokens[1])
+					if err != nil {
+						log.Println("Invalid index:", err)
+						continue
+					}
+
+					c.lobbyMutex.Lock()
+					if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
+						c.lobbyMutex.Unlock()
+						log.Println("Index out of range")
+						continue
+					}
+					peer := &Peer{
+						addr: &net.UDPAddr{
+							IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
+							Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
+						},
+						id: c.CurrentLobby.Members[index].ClientId,
+					}
+					c.lobbyMutex.Unlock()
+					c.connectToPeer(peer)
+
+				case "lobbies":
+					c.sendLobbyListRequest()
+				case "create":
+					if len(tokens) < 3 {
+						log.Println("Usage: create <lobby_name> <max_players>")
+						continue
+					}
+					maxPlayers, err := strconv.ParseUint(tokens[2], 10, 32)
+					if err != nil {
+						log.Println("Invalid max players:", err)
+						continue
+					}
+					c.createLobby(tokens[1], uint32(maxPlayers))
+				case "join":
+					if len(tokens) < 2 {
+						log.Println("Usage: join <lobby_index>")
+						continue
+					}
+					index, err := strconv.Atoi(tokens[1])
+					if err != nil {
+						log.Println("Invalid index:", err)
+						continue
+					}
+					if index < 0 || index >= len(c.AvailableLobbies) {
+						log.Println("Lobby index out of range")
+						continue
+					}
+					c.joinLobby(c.AvailableLobbies[index])
+				case "leave":
+					c.leaveLobby()
+				case "members":
+					c.lobbyMutex.Lock()
+					c.listLobbyMembers()
+					c.lobbyMutex.Unlock()
+				case "ping":
+					if len(tokens) < 2 {
+						log.Println("Usage: ping <client_index>")
+						continue
+					}
+					index, err := strconv.Atoi(tokens[1])
+					if err != nil {
+						log.Println("Invalid index:", err)
+						continue
+					}
+
+					c.lobbyMutex.Lock()
+					if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
+						c.lobbyMutex.Unlock()
+						log.Println("Index out of range")
+						continue
+					}
+					peer := &Peer{
+						addr: &net.UDPAddr{
+							IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
+							Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
+						},
+						id: c.CurrentLobby.Members[index].ClientId,
+					}
+					c.lobbyMutex.Unlock()
+					c.sendPing(peer)
+
+				case "help":
+					c.printHelp()
+				default:
+					log.Println("Unknown command:", tokens[0])
+				}
+			} else {
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
 	}
 }
@@ -381,11 +389,26 @@ func (c *Client) joinLobby(lobby *LobbyInfo) {
 	}
 }
 
-
-
 func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 	if resp.Success {
 		fmt.Printf("✅ Lobby created successfully! Lobby ID: %s\n", resp.LobbyId)
+		c.lobbyMutex.Lock()
+		defer c.lobbyMutex.Unlock()
+		c.CurrentLobby = &LobbyInfo{
+			ID:   resp.LobbyId,
+			Name: resp.LobbyName,
+			Members: []*api.ClientInfo{
+				{
+					ClientId: c.id,
+					PublicEndpoint: &api.Endpoint{
+						IpAddress: c.pubAddr.IP.String(),
+						Port:      uint32(c.pubAddr.Port),
+					},
+				},
+			},
+			CurrentPlayers: 1,
+			Peers:          make(map[string]*Peer),
+		}
 	} else {
 		fmt.Printf("❌ Failed to create lobby: %s\n", resp.Message)
 	}
@@ -557,7 +580,6 @@ func (c *Client) sendPing(peer *Peer) {
 	}
 }
 
-
 func (c *Client) handlePing(ping *api.Ping, addr *net.UDPAddr) {
 	log.Printf("Received ping from %s", ping.SourceClientId)
 
@@ -605,8 +627,6 @@ func (c *Client) printHelp() {
 	fmt.Println("  help - print this help message")
 	fmt.Println("  exit - exit the client")
 }
-
-
 
 // Run starts the client.
 func (c *Client) Run(addr string, port string) {

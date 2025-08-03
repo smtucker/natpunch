@@ -398,9 +398,10 @@ func (s *Server) handleCreateLobbyRequest(msg *api.Message_CreateLobbyRequest, a
 
 	// Send response
 	resp := &api.CreateLobbyResponse{
-		Success: true,
-		LobbyId: lobbyID,
-		Message: "Lobby created successfully",
+		Success:   true,
+		LobbyId:   lobbyID,
+		LobbyName: req.LobbyName,
+		Message:   "Lobby created successfully",
 	}
 
 	msgOut := &api.Message{

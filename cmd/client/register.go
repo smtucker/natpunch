@@ -51,47 +51,13 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 		}
 		log.Println("Register request sent")
 
-		// Set read deadline for the response
-		c.conn.SetReadDeadline(time.Now().Add(RegReadTimeout))
-
-		// Read response
-		respBuf := make([]byte, 1024)
-		n, _, err := c.conn.ReadFromUDP(respBuf)
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				log.Println("No registration response received, retrying...")
-				continue // Retry
-			}
-			return fmt.Errorf("read error: %w", err)
-		}
-
-		// Unmarshal response message
-		var respMsg api.Message
-		err = proto.Unmarshal(respBuf[:n], &respMsg)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal response: %w", err)
-		}
-
-		// Check response type
-		resp, ok := respMsg.Content.(*api.Message_RegisterResponse)
-		if !ok {
-			return fmt.Errorf("unexpected message type: %T", respMsg.Content)
-		}
-
-		// Process registration response
-		registerResponse := resp.RegisterResponse
-		if registerResponse.Success {
-			c.id = registerResponse.ClientId
-			log.Println("Registered with server. ID:", c.id)
-
-			c.pubAddr = &net.UDPAddr{
-				IP:   net.ParseIP(registerResponse.PublicEndpoint.IpAddress),
-				Port: int(registerResponse.PublicEndpoint.Port),
-			}
+		select {
+		case <-c.registered:
 			return nil // Registration successful
+		case <-time.After(RegReadTimeout):
+			log.Println("No registration response received, retrying...")
+			continue // Retry
 		}
-		return fmt.Errorf("registration failed: %s", registerResponse.Message)
-
 	}
 	return fmt.Errorf("failed to register after %d attempts", MaxRegistrationAttempts)
 }

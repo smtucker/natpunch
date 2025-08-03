@@ -1,20 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	api "natpunch/proto/gen/go"
-
+	tea "github.com/charmbracelet/bubbletea"
 	"google.golang.org/protobuf/proto"
+
+	api "natpunch/proto/gen/go"
 )
 
 // ReadTimeout defines the timeout for reading from the UDP connection.
@@ -34,8 +33,10 @@ type Client struct {
 	localAddr        *net.UDPAddr
 	stop             chan struct{}
 	wg               sync.WaitGroup
-	lobbyMutex       sync.Mutex
+	lobbyMutex       sync.RWMutex
 	id               string
+	tui              *tea.Program
+	registered       chan bool
 }
 
 // LobbyInfo represents lobby information for the client
@@ -47,44 +48,6 @@ type LobbyInfo struct {
 	MaxPlayers     uint32
 	Members        []*api.ClientInfo
 	Peers          map[string]*Peer
-}
-
-// getLocalAddr retrieves the local UDP address.
-func getLocalAddr() *net.UDPAddr {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		panic(err)
-	}
-
-	// Log all non-loopback IPv4 addresses
-	for _, addr := range addrs {
-		ipNet, ok := addr.(*net.IPNet)
-		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-			log.Println("Local address found:", ipNet.IP)
-		}
-	}
-
-	if len(addrs) == 0 {
-		log.Fatal("No local address found")
-	}
-
-	if len(addrs) > 1 {
-		fmt.Println("Found multiple local addresses, select one to use:")
-		for i, addr := range addrs {
-			fmt.Printf("%d - %s\n", i, addr)
-		}
-
-		fmt.Print("Select address: ")
-		var selected int
-		fmt.Scan(&selected)
-
-		if selected < 0 || selected >= len(addrs) {
-			log.Fatal("Invalid address selected")
-		}
-		return &net.UDPAddr{IP: addrs[selected].(*net.IPNet).IP, Port: 0}
-	}
-
-	return &net.UDPAddr{IP: addrs[0].(*net.IPNet).IP, Port: 0}
 }
 
 // listen listens for incoming UDP messages.
@@ -129,8 +92,7 @@ func (c *Client) listen() {
 							DebugMessage: &api.DebugMessage{Message: "PONG"},
 						},
 					}
-					pongBytes, _ := proto.Marshal(pongMsg)
-					c.conn.WriteTo(pongBytes, addr)
+					c.send(pongMsg)
 				}
 			case *api.Message_CreateLobbyResponse:
 				c.handleCreateLobbyResponse(content.CreateLobbyResponse)
@@ -150,6 +112,8 @@ func (c *Client) listen() {
 				c.handleLeaveLobbyResponse(content.LeaveLobbyResponse)
 			case *api.Message_PeerLeft:
 				c.handlePeerLeft(content.PeerLeft)
+			case *api.Message_RegisterResponse:
+				c.handleRegisterResponse(content.RegisterResponse)
 			default:
 				fmt.Println("Received:", string(buf[:n]))
 			}
@@ -157,140 +121,9 @@ func (c *Client) listen() {
 	}
 }
 
-// readStdin reads commands from standard input.
-func (c *Client) readStdin() {
-	defer c.wg.Done()
-	scanner := bufio.NewScanner(os.Stdin)
-
-	for {
-		select {
-		case <-c.stop:
-			return
-		default:
-			if scanner.Scan() {
-				text := scanner.Text()
-				tokens := strings.Fields(text)
-
-				if len(tokens) == 0 {
-					continue
-				}
-
-				switch tokens[0] {
-				case "exit":
-					close(c.stop)
-					return
-				case "list":
-					c.lobbyMutex.Lock()
-					if c.CurrentLobby == nil {
-						c.lobbyMutex.Unlock()
-						log.Println("You are not in a lobby. Join a lobby to see other clients.")
-						return
-					}
-					c.listLobbyMembers()
-					c.lobbyMutex.Unlock()
-
-				case "connect":
-					if len(tokens) < 2 {
-						log.Println("Usage: connect <client_index>")
-						continue
-					}
-					index, err := strconv.Atoi(tokens[1])
-					if err != nil {
-						log.Println("Invalid index:", err)
-						continue
-					}
-
-					c.lobbyMutex.Lock()
-					if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
-						c.lobbyMutex.Unlock()
-						log.Println("Index out of range")
-						continue
-					}
-					peer := &Peer{
-						addr: &net.UDPAddr{
-							IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
-							Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
-						},
-						id: c.CurrentLobby.Members[index].ClientId,
-					}
-					c.lobbyMutex.Unlock()
-					c.connectToPeer(peer)
-
-				case "lobbies":
-					c.sendLobbyListRequest()
-				case "create":
-					if len(tokens) < 3 {
-						log.Println("Usage: create <lobby_name> <max_players>")
-						continue
-					}
-					maxPlayers, err := strconv.ParseUint(tokens[2], 10, 32)
-					if err != nil {
-						log.Println("Invalid max players:", err)
-						continue
-					}
-					c.createLobby(tokens[1], uint32(maxPlayers))
-				case "join":
-					if len(tokens) < 2 {
-						log.Println("Usage: join <lobby_index>")
-						continue
-					}
-					index, err := strconv.Atoi(tokens[1])
-					if err != nil {
-						log.Println("Invalid index:", err)
-						continue
-					}
-					if index < 0 || index >= len(c.AvailableLobbies) {
-						log.Println("Lobby index out of range")
-						continue
-					}
-					c.joinLobby(c.AvailableLobbies[index])
-				case "leave":
-					c.leaveLobby()
-				case "members":
-					c.lobbyMutex.Lock()
-					c.listLobbyMembers()
-					c.lobbyMutex.Unlock()
-				case "ping":
-					if len(tokens) < 2 {
-						log.Println("Usage: ping <client_index>")
-						continue
-					}
-					index, err := strconv.Atoi(tokens[1])
-					if err != nil {
-						log.Println("Invalid index:", err)
-						continue
-					}
-
-					c.lobbyMutex.Lock()
-					if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
-						c.lobbyMutex.Unlock()
-						log.Println("Index out of range")
-						continue
-					}
-					peer := &Peer{
-						addr: &net.UDPAddr{
-							IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
-							Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
-						},
-						id: c.CurrentLobby.Members[index].ClientId,
-					}
-					c.lobbyMutex.Unlock()
-					c.sendPing(peer)
-
-				case "help":
-					c.printHelp()
-				default:
-					log.Println("Unknown command:", tokens[0])
-				}
-			} else {
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-	}
-}
-
 // keepAliveServer sends keep-alive messages to the server.
 func (c *Client) keepAliveServer() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(KeepAliveInterval)
 	defer ticker.Stop()
 
@@ -302,278 +135,14 @@ func (c *Client) keepAliveServer() {
 		},
 	}
 
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal keepalive:", err)
-	}
-
 	for {
 		select {
 		case <-ticker.C:
-			_, err = c.conn.WriteTo(out, c.srvAddr)
-			if err != nil {
-				log.Println("Failed to send keepalive:", err)
-			}
+			c.send(msg)
 		case <-c.stop:
 			return
 		}
 	}
-}
-
-func (c *Client) listLobbyMembers() {
-	fmt.Println("Lobby Members:")
-	for i, member := range c.CurrentLobby.Members {
-		fmt.Printf("%d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
-	}
-}
-
-func (c *Client) sendLobbyListRequest() {
-	req := &api.LobbyListRequest{
-		RequestId: fmt.Sprintf("req_%d", time.Now().UnixNano()),
-	}
-	msg := &api.Message{
-		Content: &api.Message_LobbyListRequest{LobbyListRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal lobby list request:", err)
-		return
-	}
-
-	_, err = c.conn.WriteTo(out, c.srvAddr)
-	if err != nil {
-		log.Println("Failed to send lobby list request:", err)
-	}
-}
-
-func (c *Client) createLobby(name string, maxPlayers uint32) {
-	req := &api.CreateLobbyRequest{
-		LobbyName:  name,
-		ClientId:   c.id,
-		MaxPlayers: maxPlayers,
-	}
-	msg := &api.Message{
-		Content: &api.Message_CreateLobbyRequest{CreateLobbyRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal create lobby request:", err)
-		return
-	}
-
-	_, err = c.conn.WriteTo(out, c.srvAddr)
-	if err != nil {
-		log.Println("Failed to send create lobby request:", err)
-	}
-}
-
-func (c *Client) joinLobby(lobby *LobbyInfo) {
-	req := &api.JoinLobbyRequest{
-		LobbyId:  lobby.ID,
-		ClientId: c.id,
-	}
-	msg := &api.Message{
-		Content: &api.Message_JoinLobbyRequest{JoinLobbyRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal join lobby request:", err)
-		return
-	}
-
-	_, err = c.conn.WriteTo(out, c.srvAddr)
-	if err != nil {
-		log.Println("Failed to send join lobby request:", err)
-	}
-}
-
-func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
-	if resp.Success {
-		fmt.Printf("✅ Lobby created successfully! Lobby ID: %s\n", resp.LobbyId)
-		c.lobbyMutex.Lock()
-		defer c.lobbyMutex.Unlock()
-		c.CurrentLobby = &LobbyInfo{
-			ID:           resp.LobbyId,
-			Name:         resp.LobbyName,
-			HostClientID: c.id,
-			Members: []*api.ClientInfo{
-				{
-					ClientId: c.id,
-					PublicEndpoint: &api.Endpoint{
-						IpAddress: c.pubAddr.IP.String(),
-						Port:      uint32(c.pubAddr.Port),
-					},
-				},
-			},
-			CurrentPlayers: 1,
-			Peers:          make(map[string]*Peer),
-		}
-	} else {
-		fmt.Printf("❌ Failed to create lobby: %s\n", resp.Message)
-	}
-}
-
-func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
-	if resp.Success {
-		fmt.Printf("Attempting to join lobby %s...\n", resp.LobbyId)
-		// Connection to host will be initiated by the server.
-		// Peer list will be populated upon successful connection.
-	} else {
-		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
-	}
-}
-
-func (c *Client) handleJoinLobbySuccess(resp *api.JoinLobbySuccess) {
-	if resp.Success {
-		fmt.Printf("✅ Successfully joined lobby %s!\n", resp.LobbyId)
-		fmt.Printf("📋 Lobby members (%d):\n", len(resp.LobbyMembers))
-		for i, member := range resp.LobbyMembers {
-			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
-		}
-
-		c.lobbyMutex.Lock()
-		defer c.lobbyMutex.Unlock()
-
-		// Convert to local LobbyInfo
-		c.CurrentLobby = &LobbyInfo{
-			ID:             resp.LobbyId,
-			Members:        resp.LobbyMembers,
-			CurrentPlayers: uint32(len(resp.LobbyMembers)),
-			Peers:          make(map[string]*Peer),
-		}
-		for _, member := range resp.LobbyMembers {
-			if member.ClientId != c.id {
-				c.CurrentLobby.Peers[member.ClientId] = &Peer{
-					id:    member.ClientId,
-					addr:  &net.UDPAddr{IP: net.ParseIP(member.PublicEndpoint.IpAddress), Port: int(member.PublicEndpoint.Port)},
-					state: DISCONNECTED,
-				}
-			}
-		}
-	} else {
-		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
-	}
-}
-
-
-func (c *Client) isLobbyHost() bool {
-	if c.CurrentLobby == nil {
-		return false
-	}
-	return c.CurrentLobby.HostClientID == c.id
-}
-
-
-func (c *Client) handleLobbyListResponse(resp *api.LobbyListResponse) {
-	if resp.Success {
-		fmt.Println("📋 Available Lobbies:")
-		c.AvailableLobbies = make([]*LobbyInfo, len(resp.Lobbies))
-		for i, lobby := range resp.Lobbies {
-			c.AvailableLobbies[i] = &LobbyInfo{
-				ID:             lobby.LobbyId,
-				Name:           lobby.LobbyName,
-				HostClientID:   lobby.HostClientId,
-				CurrentPlayers: lobby.CurrentPlayers,
-				MaxPlayers:     lobby.MaxPlayers,
-				Members:        lobby.Members,
-			}
-			fmt.Printf("%d - %s (Host: %s, Players: %d/%d)\n",
-				i, lobby.LobbyName, lobby.HostClientId, lobby.CurrentPlayers, lobby.MaxPlayers)
-		}
-	} else {
-		fmt.Printf("❌ Failed to get lobby list: %s\n", resp.Message)
-	}
-}
-
-func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
-	fmt.Printf("🔄 Lobby update for %s: %s\n", update.LobbyId, update.UpdateType)
-
-	// Update current lobby if it matches
-	if c.CurrentLobby != nil && c.CurrentLobby.ID == update.LobbyId {
-		c.lobbyMutex.Lock()
-		defer c.lobbyMutex.Unlock()
-		c.CurrentLobby.Name = update.LobbyInfo.LobbyName
-		c.CurrentLobby.HostClientID = update.LobbyInfo.HostClientId
-		c.CurrentLobby.CurrentPlayers = update.LobbyInfo.CurrentPlayers
-		c.CurrentLobby.MaxPlayers = update.LobbyInfo.MaxPlayers
-		c.CurrentLobby.Members = update.LobbyInfo.Members
-
-		// Update the Peers map
-		for _, member := range update.LobbyInfo.Members {
-			if _, ok := c.CurrentLobby.Peers[member.ClientId]; !ok && member.ClientId != c.id {
-				c.CurrentLobby.Peers[member.ClientId] = &Peer{
-					id:    member.ClientId,
-					addr:  &net.UDPAddr{IP: net.ParseIP(member.PublicEndpoint.IpAddress), Port: int(member.PublicEndpoint.Port)},
-					state: DISCONNECTED,
-				}
-			}
-		}
-
-		fmt.Printf("📋 Updated lobby members (%d):\n", len(update.LobbyInfo.Members))
-		for i, member := range update.LobbyInfo.Members {
-			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
-		}
-	}
-}
-
-func (c *Client) leaveLobby() {
-	c.lobbyMutex.Lock()
-	defer c.lobbyMutex.Unlock()
-	if c.CurrentLobby == nil {
-		log.Println("Not in a lobby")
-		return
-	}
-
-	req := &api.LeaveLobbyRequest{
-		LobbyId:  c.CurrentLobby.ID,
-		ClientId: c.id,
-	}
-	msg := &api.Message{
-		Content: &api.Message_LeaveLobbyRequest{LeaveLobbyRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal leave lobby request:", err)
-		return
-	}
-
-	_, err = c.conn.WriteTo(out, c.srvAddr)
-	if err != nil {
-		log.Println("Failed to send leave lobby request:", err)
-	}
-}
-
-func (c *Client) handleLeaveLobbyResponse(resp *api.LeaveLobbyResponse) {
-	if resp.Success {
-		c.lobbyMutex.Lock()
-		defer c.lobbyMutex.Unlock()
-		fmt.Printf("✅ Left lobby successfully!\n")
-		c.CurrentLobby = nil
-	} else {
-		fmt.Printf("❌ Failed to leave lobby: %s\n", resp.Message)
-	}
-}
-
-func (c *Client) handlePeerLeft(resp *api.PeerLeft) {
-	c.lobbyMutex.Lock()
-	defer c.lobbyMutex.Unlock()
-	if c.CurrentLobby == nil {
-		return
-	}
-	var newMembers []*api.ClientInfo
-	for _, member := range c.CurrentLobby.Members {
-		if member.ClientId != resp.ClientId {
-			newMembers = append(newMembers, member)
-		}
-	}
-	c.CurrentLobby.Members = newMembers
-	c.CurrentLobby.CurrentPlayers = uint32(len(newMembers))
-	delete(c.CurrentLobby.Peers, resp.ClientId)
-	fmt.Printf("Peer %s has left the lobby.\n", resp.ClientId)
 }
 
 func (c *Client) sendPing(peer *Peer) {
@@ -636,18 +205,24 @@ func (c *Client) handlePong(pong *api.Pong, addr *net.UDPAddr) {
 	}
 }
 
-func (c *Client) printHelp() {
-	fmt.Println("Available commands:")
-	fmt.Println("  list - list available clients in the current lobby")
-	fmt.Println("  connect <index> - connect to a client by index")
-	fmt.Println("  ping <index> - ping a client by index")
-	fmt.Println("  lobbies - list available lobbies")
-	fmt.Println("  create <name> <max_players> - create a lobby")
-	fmt.Println("  join <index> - join a lobby by index")
-	fmt.Println("  members - list members in the current lobby")
-	fmt.Println("  leave - leave the current lobby")
-	fmt.Println("  help - print this help message")
-	fmt.Println("  exit - exit the client")
+func (c *Client) isLobbyHost() bool {
+	if c.CurrentLobby == nil {
+		return false
+	}
+	return c.CurrentLobby.HostClientID == c.id
+}
+
+func (c *Client) send(msg *api.Message) {
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal message:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send message:", err)
+	}
 }
 
 // Run starts the client.
@@ -659,8 +234,9 @@ func (c *Client) Run(addr string, port string) {
 	}
 
 	c.stop = make(chan struct{})
+	c.registered = make(chan bool)
 
-	c.localAddr = getLocalAddr()
+	c.localAddr = &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0}
 
 	c.conn, err = net.ListenUDP("udp", c.localAddr)
 	if err != nil {
@@ -674,22 +250,19 @@ func (c *Client) Run(addr string, port string) {
 	}
 	c.localAddr = localAddrWithPort
 
-	if err := c.register(c.localAddr); err != nil {
-		log.Println("Error registering:", err)
-		return
-	}
-
 	c.pendingPings = make(map[uint32]time.Time)
-
-	c.printHelp()
-
 	c.wg = sync.WaitGroup{}
 
 	c.wg.Add(1)
 	go c.listen()
 
+	if err := c.register(c.localAddr); err != nil {
+		log.Println("Error registering:", err)
+		return
+	}
+
 	c.wg.Add(1)
-	go c.readStdin()
+	go c.runTUI()
 
 	c.wg.Add(1)
 	go c.keepAliveServer()
@@ -700,6 +273,165 @@ func (c *Client) Run(addr string, port string) {
 	c.wg.Wait()
 	c.conn.Close()
 	log.Println("Client exited")
+}
+
+func (c *Client) handleRegisterResponse(resp *api.RegisterResponse) {
+	if resp.Success {
+		c.id = resp.ClientId
+		log.Println("Registered with server. ID:", c.id)
+
+		c.pubAddr = &net.UDPAddr{
+			IP:   net.ParseIP(resp.PublicEndpoint.IpAddress),
+			Port: int(resp.PublicEndpoint.Port),
+		}
+		c.registered <- true
+	} else {
+		log.Printf("Registration failed: %s", resp.Message)
+		c.registered <- false
+	}
+}
+
+func (c *Client) handleCommand(input string) {
+	c.lobbyMutex.RLock()
+	defer c.lobbyMutex.RUnlock()
+	parts := strings.Split(input, " ")
+	command := parts[0]
+
+	switch command {
+	case "create":
+		if len(parts) != 3 {
+			log.Println("Usage: create <lobby_name> <max_players>")
+			return
+		}
+		maxPlayers, err := strconv.Atoi(parts[2])
+		if err != nil {
+			log.Println("Invalid max players")
+			return
+		}
+		c.createLobby(parts[1], uint32(maxPlayers))
+	case "join":
+		if len(parts) != 2 {
+			log.Println("Usage: join <lobby_id>")
+			return
+		}
+		var lobbyToJoin *LobbyInfo
+		for _, lobby := range c.AvailableLobbies {
+			if lobby.ID == parts[1] {
+				lobbyToJoin = lobby
+				break
+			}
+		}
+		if lobbyToJoin == nil {
+			log.Println("Lobby not found")
+			return
+		}
+		c.joinLobby(lobbyToJoin)
+	case "leave":
+		c.leaveLobby()
+	case "list":
+		c.sendLobbyListRequest()
+	case "members":
+		c.listLobbyMembers()
+	case "connect":
+		if len(parts) != 2 {
+			log.Println("Usage: connect <client_index>")
+			return
+		}
+		index, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			log.Println("Invalid index:", err)
+			return
+		}
+		c.connectToPeerByIndex(int(index))
+	case "ping":
+		if len(parts) != 2 {
+			log.Println("Usage: ping <client_index>")
+			return
+		}
+		index, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			log.Println("Invalid index:", err)
+			return
+		}
+		c.pingPeerByIndex(int(index))
+	default:
+		c.handleUnknownCommand(command)
+	}
+}
+
+func (c *Client) listLobbyMembers() {
+	if c.CurrentLobby == nil {
+		log.Println("Not in a lobby")
+		return
+	}
+	var memberNames []string
+	for _, member := range c.CurrentLobby.Members {
+		memberNames = append(memberNames, member.ClientId)
+	}
+	log.Println("Lobby members:", strings.Join(memberNames, ", "))
+}
+
+func (c *Client) connectToPeerByIndex(index int) {
+	c.lobbyMutex.RLock()
+	defer c.lobbyMutex.RUnlock()
+	if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
+		log.Println("Invalid peer index")
+		return
+	}
+	peerInfo := c.CurrentLobby.Members[index]
+	peer := &Peer{
+		id: peerInfo.ClientId,
+		addr: &net.UDPAddr{
+			IP:   net.ParseIP(peerInfo.PublicEndpoint.IpAddress),
+			Port: int(peerInfo.PublicEndpoint.Port),
+		},
+	}
+	c.connectToPeer(peer)
+}
+
+func (c *Client) pingPeerByIndex(index int) {
+	c.lobbyMutex.RLock()
+	defer c.lobbyMutex.RUnlock()
+	if c.CurrentLobby == nil || index < 0 || index >= len(c.CurrentLobby.Members) {
+		log.Println("Invalid peer index")
+		return
+	}
+	peerInfo := c.CurrentLobby.Members[index]
+	peer := &Peer{
+		id: peerInfo.ClientId,
+		addr: &net.UDPAddr{
+			IP:   net.ParseIP(peerInfo.PublicEndpoint.IpAddress),
+			Port: int(peerInfo.PublicEndpoint.Port),
+		},
+	}
+	c.sendPing(peer)
+}
+
+
+func (c *Client) listLobbies() {
+	c.sendLobbyListRequest()
+}
+
+func (c *Client) stopClient() {
+	close(c.stop)
+}
+
+func (c *Client) handleUnknownCommand(command string) {
+	log.Printf("Unknown command: %s", command)
+	c.printHelp()
+}
+
+func (c *Client) printHelp() {
+	log.Println("Available commands:")
+	log.Println("  list - list available lobbies")
+	log.Println("  create <name> <max_players> - create a lobby")
+	log.Println("  join <id> - join a lobby by id")
+	log.Println("  leave - leave the current lobby")
+	log.Println("  members - list members in the current lobby")
+	log.Println("  ping <index> - ping a client by index")
+	log.Println("  connect <index> - connect to a client by index")
+	log.Println("  help - print this help message")
+	log.Println("  exit - exit the client")
 }
 
 func main() {

@@ -25,8 +25,6 @@ const KeepAliveInterval = 2 * time.Second
 
 // Client represents the NAT traversal client.
 type Client struct {
-	AvailablePeers   []*Peer
-	KnownPeers       map[string]*Peer
 	AvailableLobbies []*LobbyInfo
 	CurrentLobby     *LobbyInfo
 	pendingPings     map[uint32]time.Time
@@ -47,7 +45,10 @@ type LobbyInfo struct {
 	CurrentPlayers uint32
 	MaxPlayers     uint32
 	Members        []*api.ClientInfo
+	Peers          map[string]*Peer
 }
+
+
 
 // getLocalAddr retrieves the local UDP address.
 func getLocalAddr() *net.UDPAddr {
@@ -114,8 +115,7 @@ func (c *Client) listen() {
 			}
 
 			switch content := msg.Content.(type) {
-			case *api.Message_ClientListResponse:
-				c.receiveClientList(content.ClientListResponse)
+
 			case *api.Message_ConnectionInstruction:
 				c.handleConnectionInstruction(content.ConnectionInstruction, addr)
 			case *api.Message_ConnectionEstablished:
@@ -145,12 +145,17 @@ func (c *Client) listen() {
 				c.handlePing(content.Ping, addr)
 			case *api.Message_Pong:
 				c.handlePong(content.Pong, addr)
+			case *api.Message_LeaveLobbyResponse:
+				c.handleLeaveLobbyResponse(content.LeaveLobbyResponse)
+			case *api.Message_PeerLeft:
+				c.handlePeerLeft(content.PeerLeft)
 			default:
 				fmt.Println("Received:", string(buf[:n]))
 			}
 		}
 	}
 }
+
 
 // readStdin reads commands from standard input.
 func (c *Client) readStdin() {
@@ -170,7 +175,12 @@ func (c *Client) readStdin() {
 			close(c.stop)
 			return
 		case "list":
-			c.sendClientListRequest()
+			if c.CurrentLobby == nil {
+				log.Println("You are not in a lobby. Join a lobby to see other clients.")
+				return
+			}
+			c.listLobbyMembers()
+
 		case "connect":
 			if len(tokens) < 2 {
 				log.Println("Usage: connect <client_index>")
@@ -182,11 +192,19 @@ func (c *Client) readStdin() {
 				continue
 			}
 
-			if index < 0 || index >= len(c.AvailablePeers) {
+			if index < 0 || index >= len(c.CurrentLobby.Members) {
 				log.Println("Index out of range")
 				continue
 			}
-			c.connectToPeer(c.AvailablePeers[index])
+			peer := &Peer{
+				addr: &net.UDPAddr{
+					IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
+					Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
+				},
+				id: c.CurrentLobby.Members[index].ClientId,
+			}
+			c.connectToPeer(peer)
+
 		case "lobbies":
 			c.sendLobbyListRequest()
 		case "create":
@@ -215,6 +233,10 @@ func (c *Client) readStdin() {
 				continue
 			}
 			c.joinLobby(c.AvailableLobbies[index])
+		case "leave":
+			c.leaveLobby()
+		case "members":
+			c.listLobbyMembers()
 		case "ping":
 			if len(tokens) < 2 {
 				log.Println("Usage: ping <client_index>")
@@ -225,11 +247,19 @@ func (c *Client) readStdin() {
 				log.Println("Invalid index:", err)
 				continue
 			}
-			if index < 0 || index >= len(c.AvailablePeers) {
+			if index < 0 || index >= len(c.CurrentLobby.Members) {
 				log.Println("Index out of range")
 				continue
 			}
-			c.sendPing(c.AvailablePeers[index])
+			peer := &Peer{
+				addr: &net.UDPAddr{
+					IP:   net.ParseIP(c.CurrentLobby.Members[index].PublicEndpoint.IpAddress),
+					Port: int(c.CurrentLobby.Members[index].PublicEndpoint.Port),
+				},
+				id: c.CurrentLobby.Members[index].ClientId,
+			}
+			c.sendPing(peer)
+
 		case "help":
 			c.printHelp()
 		default:
@@ -269,22 +299,10 @@ func (c *Client) keepAliveServer() {
 	}
 }
 
-// sendClientListRequest sends a request to the server for the client list.
-func (c *Client) sendClientListRequest() {
-	req := &api.ClientListRequest{}
-	msg := &api.Message{
-		Content: &api.Message_ClientListRequest{ClientListRequest: req},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println("Failed to marshal list request:", err)
-		return
-	}
-
-	_, err = c.conn.WriteTo(out, c.srvAddr)
-	if err != nil {
-		log.Println("Failed to send list request:", err)
+func (c *Client) listLobbyMembers() {
+	fmt.Println("Lobby Members:")
+	for i, member := range c.CurrentLobby.Members {
+		fmt.Printf("%d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
 	}
 }
 
@@ -351,21 +369,7 @@ func (c *Client) joinLobby(lobby *LobbyInfo) {
 	}
 }
 
-// receiveClientList processes the client list received from the server.
-func (c *Client) receiveClientList(resp *api.ClientListResponse) {
-	fmt.Println("Client List:")
-	c.AvailablePeers = make([]*Peer, len(resp.Clients))
-	for i, client := range resp.Clients {
-		c.AvailablePeers[i] = &Peer{
-			addr: &net.UDPAddr{
-				IP:   net.ParseIP(client.PublicEndpoint.IpAddress),
-				Port: int(client.PublicEndpoint.Port),
-			},
-			id: client.ClientId,
-		}
-		fmt.Printf("%d - %s: %s:%d\n", i, client.ClientId, client.PublicEndpoint.IpAddress, client.PublicEndpoint.Port)
-	}
-}
+
 
 func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 	if resp.Success {
@@ -388,6 +392,16 @@ func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
 			ID:             resp.LobbyId,
 			Members:        resp.LobbyMembers,
 			CurrentPlayers: uint32(len(resp.LobbyMembers)),
+			Peers:          make(map[string]*Peer),
+		}
+		for _, member := range resp.LobbyMembers {
+			if member.ClientId != c.id {
+				c.CurrentLobby.Peers[member.ClientId] = &Peer{
+					id:    member.ClientId,
+					addr:  &net.UDPAddr{IP: net.ParseIP(member.PublicEndpoint.IpAddress), Port: int(member.PublicEndpoint.Port)},
+					state: DISCONNECTED,
+				}
+			}
 		}
 	} else {
 		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
@@ -429,11 +443,72 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 			Members:        update.LobbyInfo.Members,
 		}
 
+		// Update the Peers map
+		for _, member := range update.LobbyInfo.Members {
+			if _, ok := c.CurrentLobby.Peers[member.ClientId]; !ok && member.ClientId != c.id {
+				c.CurrentLobby.Peers[member.ClientId] = &Peer{
+					id:    member.ClientId,
+					addr:  &net.UDPAddr{IP: net.ParseIP(member.PublicEndpoint.IpAddress), Port: int(member.PublicEndpoint.Port)},
+					state: DISCONNECTED,
+				}
+			}
+		}
+
 		fmt.Printf("📋 Updated lobby members (%d):\n", len(update.LobbyInfo.Members))
 		for i, member := range update.LobbyInfo.Members {
 			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
 		}
 	}
+}
+func (c *Client) leaveLobby() {
+	if c.CurrentLobby == nil {
+		log.Println("Not in a lobby")
+		return
+	}
+
+	req := &api.LeaveLobbyRequest{
+		LobbyId:  c.CurrentLobby.ID,
+		ClientId: c.id,
+	}
+	msg := &api.Message{
+		Content: &api.Message_LeaveLobbyRequest{LeaveLobbyRequest: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal leave lobby request:", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Println("Failed to send leave lobby request:", err)
+	}
+}
+
+func (c *Client) handleLeaveLobbyResponse(resp *api.LeaveLobbyResponse) {
+	if resp.Success {
+		fmt.Printf("✅ Left lobby successfully!\n")
+		c.CurrentLobby = nil
+	} else {
+		fmt.Printf("❌ Failed to leave lobby: %s\n", resp.Message)
+	}
+}
+
+func (c *Client) handlePeerLeft(resp *api.PeerLeft) {
+	if c.CurrentLobby == nil {
+		return
+	}
+	var newMembers []*api.ClientInfo
+	for _, member := range c.CurrentLobby.Members {
+		if member.ClientId != resp.ClientId {
+			newMembers = append(newMembers, member)
+		}
+	}
+	c.CurrentLobby.Members = newMembers
+	c.CurrentLobby.CurrentPlayers = uint32(len(newMembers))
+	delete(c.CurrentLobby.Peers, resp.ClientId)
+	fmt.Printf("Peer %s has left the lobby.\n", resp.ClientId)
 }
 
 func (c *Client) sendPing(peer *Peer) {
@@ -461,6 +536,7 @@ func (c *Client) sendPing(peer *Peer) {
 		c.pendingPings[seq] = time.Now()
 	}
 }
+
 
 func (c *Client) handlePing(ping *api.Ping, addr *net.UDPAddr) {
 	log.Printf("Received ping from %s", ping.SourceClientId)
@@ -498,12 +574,14 @@ func (c *Client) handlePong(pong *api.Pong, addr *net.UDPAddr) {
 
 func (c *Client) printHelp() {
 	fmt.Println("Available commands:")
-	fmt.Println("  list - list available clients")
+	fmt.Println("  list - list available clients in the current lobby")
 	fmt.Println("  connect <index> - connect to a client by index")
 	fmt.Println("  ping <index> - ping a client by index")
 	fmt.Println("  lobbies - list available lobbies")
 	fmt.Println("  create <name> <max_players> - create a lobby")
 	fmt.Println("  join <index> - join a lobby by index")
+	fmt.Println("  members - list members in the current lobby")
+	fmt.Println("  leave - leave the current lobby")
 	fmt.Println("  help - print this help message")
 	fmt.Println("  exit - exit the client")
 }
@@ -539,7 +617,6 @@ func (c *Client) Run(addr string, port string) {
 		return
 	}
 
-	c.KnownPeers = make(map[string]*Peer)
 	c.pendingPings = make(map[uint32]time.Time)
 
 	c.printHelp()

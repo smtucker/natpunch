@@ -27,3 +27,6 @@ go.work.sum
 
 # env file
 .env
+
+# Crush directory
+.crush/

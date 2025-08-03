@@ -4,7 +4,7 @@ package api;
 
 option go_package = "natpunch/proto/;api";
 
-import "google/protobuf/timestamp.proto";
+
 
 message Endpoint {
   string ip_address = 1;
@@ -15,8 +15,7 @@ message Message {
   oneof content {
     RegisterRequest register_request = 1;
     RegisterResponse register_response = 2;
-    ClientListRequest client_list_request = 3;
-    ClientListResponse client_list_response = 4;
+
     ConnectRequest connect_request = 5;
     ConnectionInstruction connection_instruction = 6;
     ConnectionEstablished connection_established = 7;
@@ -32,6 +31,9 @@ message Message {
     LobbyUpdate lobby_update = 17;
     Ping ping = 18;
     Pong pong = 19;
+    LeaveLobbyRequest leave_lobby_request = 20;
+    LeaveLobbyResponse leave_lobby_response = 21;
+    PeerLeft peer_left = 22;
   }
 }
 
@@ -76,14 +78,6 @@ message RegisterResponse {
   string message = 4;
 }
 
-message ClientListRequest { string request_id = 1; }
-
-message ClientListResponse {
-  bool success = 1;
-  string request_id = 2;
-  repeated ClientInfo clients = 3;
-  string message = 4;
-}
 
 message ClientInfo {
   string client_id = 1;
@@ -159,4 +153,19 @@ message Pong {
   string destination_client_id = 2;
   uint32 sequence_number = 3;
 }
+
+message LeaveLobbyRequest {
+  string lobby_id = 1;
+  string client_id = 2;
+}
+
+message LeaveLobbyResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message PeerLeft {
+  string client_id = 1;
+}
+
 

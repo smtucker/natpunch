@@ -16,7 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TODO: Make this configurable
 var bufferSize = 1024
 
 // keepAliveTimeout is the duration after which a client is considered disconnected
@@ -149,9 +148,6 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 	case *api.Message_RegisterRequest:
 		log.Println("Received RegisterRequest:", content.RegisterRequest)
 		s.registerClient(*content, addr)
-	case *api.Message_ClientListRequest:
-		log.Println("Received ClientListRequest:", content.ClientListRequest)
-		s.handleClientListRequest(content, addr)
 	case *api.Message_ConnectRequest:
 		s.handleConnectRequest(content, addr)
 	case *api.Message_KeepAlive:
@@ -166,44 +162,100 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 	case *api.Message_LobbyListRequest:
 		log.Println("Received LobbyListRequest:", content.LobbyListRequest)
 		s.handleLobbyListRequest(content, addr)
+	case *api.Message_LeaveLobbyRequest:
+		log.Println("Received LeaveLobbyRequest:", content.LeaveLobbyRequest)
+		s.handleLeaveLobbyRequest(content, addr)
 	default:
 		log.Println("Received unknown message type:", content)
 	}
 	return nil
 }
 
-func (s *Server) handleClientListRequest(msg *api.Message_ClientListRequest, addr *net.UDPAddr) {
-	s.mut.RLock()
-	defer s.mut.RUnlock()
+func (s *Server) handleLeaveLobbyRequest(msg *api.Message_LeaveLobbyRequest, addr *net.UDPAddr) {
+	req := msg.LeaveLobbyRequest
 
-	var clientList []*api.ClientInfo
-	for id, client := range s.Clients {
-		clientList = append(clientList, &api.ClientInfo{
-			ClientId: id,
-			PublicEndpoint: &api.Endpoint{
-				IpAddress: client.Addr.IP.String(),
-				Port:      uint32(client.Addr.Port),
-			},
-		})
-	}
-
-	resp := &api.ClientListResponse{
-		Success: true,
-		Clients: clientList,
-	}
-
-	data, err := proto.Marshal(&api.Message{
-		Content: &api.Message_ClientListResponse{ClientListResponse: resp},
-	})
-	if err != nil {
-		log.Println("Failed to marshal ClientListResponse:", err)
+	// Find lobby
+	s.mut.Lock()
+	lobby, lobbyExists := s.Lobbies[req.LobbyId]
+	if !lobbyExists {
+		s.mut.Unlock()
+		s.sendErrorResponse(addr, "Lobby not found")
 		return
 	}
 
-	if _, err := s.conn.WriteToUDP(data, addr); err != nil {
-		log.Println("Failed to send ClientListResponse:", err)
+	// Remove client from lobby
+	if _, ok := lobby.Members[req.ClientId]; ok {
+		delete(lobby.Members, req.ClientId)
+		log.Printf("Client %s left lobby %s", req.ClientId, req.LobbyId)
+	} else {
+		s.mut.Unlock()
+		s.sendErrorResponse(addr, "Client not in lobby")
+		return
+	}
+
+	// Notify remaining members
+	s.notifyLobbyMembersOfPeerLeft(lobby, req.ClientId)
+
+	// If no members are left, delete the lobby
+	if len(lobby.Members) == 0 {
+		delete(s.Lobbies, req.LobbyId)
+		log.Printf("Lobby %s is empty and has been deleted", req.LobbyId)
+	} else if lobby.HostClientID == req.ClientId {
+		// If the host left, assign a new host
+		for newHostID := range lobby.Members {
+			lobby.HostClientID = newHostID
+			log.Printf("Lobby %s host changed to %s", req.LobbyId, newHostID)
+			break
+		}
+	}
+	s.mut.Unlock()
+
+	// Send success response
+	resp := &api.LeaveLobbyResponse{
+		Success: true,
+		Message: "Successfully left lobby",
+	}
+
+	msgOut := &api.Message{
+		Content: &api.Message_LeaveLobbyResponse{LeaveLobbyResponse: resp},
+	}
+
+	out, err := proto.Marshal(msgOut)
+	if err != nil {
+		log.Printf("Failed to marshal LeaveLobbyResponse: %v", err)
+		return
+	}
+
+	_, err = s.conn.WriteToUDP(out, addr)
+	if err != nil {
+		log.Printf("Failed to send LeaveLobbyResponse: %v", err)
 	}
 }
+
+func (s *Server) notifyLobbyMembersOfPeerLeft(lobby *LobbyInfo, peerLeftID string) {
+	msg := &api.Message{
+		Content: &api.Message_PeerLeft{
+			PeerLeft: &api.PeerLeft{
+				ClientId: peerLeftID,
+			},
+		},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal PeerLeft message: %v", err)
+		return
+	}
+
+	for memberID, memberClient := range lobby.Members {
+		_, err := s.conn.WriteToUDP(out, memberClient.Addr)
+		if err != nil {
+			log.Printf("Failed to send PeerLeft notification to %s: %v", memberID, err)
+		}
+	}
+}
+
+
 
 func (s *Server) handleConnectRequest(msg *api.Message_ConnectRequest, addr *net.UDPAddr) {
 	req := msg.ConnectRequest

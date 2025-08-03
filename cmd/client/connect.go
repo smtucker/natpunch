@@ -31,14 +31,7 @@ type Peer struct {
 
 // connectToPeer initiates a connection to the specified peer.
 func (c *Client) connectToPeer(peerToConnect *Peer) {
-	if _, ok := c.KnownPeers[peerToConnect.id]; ok {
-		log.Println("Already know peer", peerToConnect.id)
-		return
-	}
-
 	log.Printf("Requesting connection to peer %s", peerToConnect.id)
-	peerToConnect.state = PENDING
-	c.KnownPeers[peerToConnect.id] = peerToConnect
 
 	ep := api.Endpoint{IpAddress: c.localAddr.IP.String(), Port: uint32(c.localAddr.Port)}
 	msg := &api.ConnectRequest{
@@ -58,7 +51,6 @@ func (c *Client) connectToPeer(peerToConnect *Peer) {
 	_, err = c.conn.WriteTo(bytes, c.srvAddr)
 	if err != nil {
 		log.Println("Failed to send connect request:", err)
-		delete(c.KnownPeers, peerToConnect.id)
 	} else {
 		log.Printf("Connection request for peer %s sent to server.", peerToConnect.id)
 	}
@@ -72,16 +64,12 @@ func (c *Client) handleConnectionInstruction(resp *api.ConnectionInstruction, ad
 	}
 
 	log.Printf("Received connection instruction for peer: %s", resp.ClientId)
-	peer, ok := c.KnownPeers[resp.ClientId]
-	if !ok {
-		log.Printf("Received connection info for peer we are not connecting to: %s. Adding to known peers.", resp.ClientId)
-		peer = &Peer{id: resp.ClientId}
-		c.KnownPeers[resp.ClientId] = peer
+	peer := &Peer{
+		id:        resp.ClientId,
+		addr:      &net.UDPAddr{IP: net.ParseIP(resp.PublicEndpoint.IpAddress), Port: int(resp.PublicEndpoint.Port)},
+		localAddr: &net.UDPAddr{IP: net.ParseIP(resp.LocalEndpoint.IpAddress), Port: int(resp.LocalEndpoint.Port)},
+		state:     PENDING,
 	}
-
-	peer.addr = &net.UDPAddr{IP: net.ParseIP(resp.PublicEndpoint.IpAddress), Port: int(resp.PublicEndpoint.Port)}
-	peer.localAddr = &net.UDPAddr{IP: net.ParseIP(resp.LocalEndpoint.IpAddress), Port: int(resp.LocalEndpoint.Port)}
-	peer.state = PENDING
 
 	log.Printf("Starting hole punch for peer %s at %s (public) and %s (local)", peer.id, peer.addr, peer.localAddr)
 	go c.holePunch(peer)
@@ -90,17 +78,15 @@ func (c *Client) handleConnectionInstruction(resp *api.ConnectionInstruction, ad
 // handleConnectionEstablished handles a connection established message from a peer.
 func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, addr *net.UDPAddr) {
 	log.Println("ConnectionEstablished from peer:", msg.ClientId, "at address:", addr)
-	peer, ok := c.KnownPeers[msg.ClientId]
-	if !ok {
+	if peer, ok := c.CurrentLobby.Peers[msg.ClientId]; ok {
+		if peer.state == CONNECTED {
+			return // Already connected
+		}
+		peer.state = CONNECTED
+	} else {
 		log.Printf("Received ConnectionEstablished from unknown peer %s", msg.ClientId)
 		return
 	}
-
-	if peer.state == CONNECTED {
-		return // Already connected
-	}
-
-	peer.state = CONNECTED
 	log.Printf("Connection to peer %s established! Remote address is %s", msg.ClientId, addr)
 
 	// Send a confirmation back to the same address we received it from
@@ -113,7 +99,7 @@ func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, add
 	c.conn.WriteTo(bytes, addr)
 
 	// Start connection verification
-	go c.verifyConnection(peer, addr)
+	go c.verifyConnection(c.CurrentLobby.Peers[msg.ClientId], addr)
 }
 
 // holePunch performs NAT traversal by sending packets to the peer's public and local addresses.
@@ -139,7 +125,7 @@ func (c *Client) holePunch(peer *Peer) {
 
 	for {
 		// Check if we are already connected
-		if p, ok := c.KnownPeers[peer.id]; ok && p.state == CONNECTED {
+		if p, ok := c.CurrentLobby.Peers[peer.id]; ok && p.state == CONNECTED {
 			log.Printf("Hole punch to %s successful", peer.id)
 			return
 		}

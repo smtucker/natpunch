@@ -136,6 +136,8 @@ func (c *Client) listen() {
 				c.handleCreateLobbyResponse(content.CreateLobbyResponse)
 			case *api.Message_JoinLobbyResponse:
 				c.handleJoinLobbyResponse(content.JoinLobbyResponse)
+			case *api.Message_JoinLobbySuccess:
+				c.handleJoinLobbySuccess(content.JoinLobbySuccess)
 			case *api.Message_LobbyListResponse:
 				c.handleLobbyListResponse(content.LobbyListResponse)
 			case *api.Message_LobbyUpdate:
@@ -167,7 +169,6 @@ func (c *Client) readStdin() {
 		default:
 			if scanner.Scan() {
 				text := scanner.Text()
-				fmt.Println("Read from stdin:", text)
 				tokens := strings.Fields(text)
 
 				if len(tokens) == 0 {
@@ -395,8 +396,9 @@ func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 		c.lobbyMutex.Lock()
 		defer c.lobbyMutex.Unlock()
 		c.CurrentLobby = &LobbyInfo{
-			ID:   resp.LobbyId,
-			Name: resp.LobbyName,
+			ID:           resp.LobbyId,
+			Name:         resp.LobbyName,
+			HostClientID: c.id,
 			Members: []*api.ClientInfo{
 				{
 					ClientId: c.id,
@@ -415,6 +417,16 @@ func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 }
 
 func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
+	if resp.Success {
+		fmt.Printf("Attempting to join lobby %s...\n", resp.LobbyId)
+		// Connection to host will be initiated by the server.
+		// Peer list will be populated upon successful connection.
+	} else {
+		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
+	}
+}
+
+func (c *Client) handleJoinLobbySuccess(resp *api.JoinLobbySuccess) {
 	if resp.Success {
 		fmt.Printf("✅ Successfully joined lobby %s!\n", resp.LobbyId)
 		fmt.Printf("📋 Lobby members (%d):\n", len(resp.LobbyMembers))
@@ -445,6 +457,15 @@ func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
 		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
 	}
 }
+
+
+func (c *Client) isLobbyHost() bool {
+	if c.CurrentLobby == nil {
+		return false
+	}
+	return c.CurrentLobby.HostClientID == c.id
+}
+
 
 func (c *Client) handleLobbyListResponse(resp *api.LobbyListResponse) {
 	if resp.Success {
@@ -497,6 +518,7 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 		}
 	}
 }
+
 func (c *Client) leaveLobby() {
 	c.lobbyMutex.Lock()
 	defer c.lobbyMutex.Unlock()

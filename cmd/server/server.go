@@ -165,6 +165,9 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 	case *api.Message_LeaveLobbyRequest:
 		log.Println("Received LeaveLobbyRequest:", content.LeaveLobbyRequest)
 		s.handleLeaveLobbyRequest(content, addr)
+	case *api.Message_PeerConnectionReady:
+		log.Println("Received PeerConnectionReady:", content.PeerConnectionReady)
+		s.handlePeerConnectionReady(content, addr)
 	default:
 		log.Println("Received unknown message type:", content)
 	}
@@ -449,12 +452,115 @@ func (s *Server) handleJoinLobbyRequest(msg *api.Message_JoinLobbyRequest, addr 
 		return
 	}
 
-	// Add client to lobby
-	s.mut.Lock()
-	lobby.Members[req.ClientId] = client
-	s.mut.Unlock()
+	// Trigger connection between new client and host
+	hostClient, hostExists := s.Clients[lobby.HostClientID]
+	if !hostExists {
+		s.sendErrorResponse(addr, "Lobby host not found")
+		return
+	}
 
-	log.Printf("Client %s joined lobby %s", req.ClientId, req.LobbyId)
+	// Send a preliminary JoinLobbyResponse to the joining client to indicate the process has started
+	preliminaryResp := &api.JoinLobbyResponse{
+		Success: true,
+		LobbyId: req.LobbyId,
+		Message: "Attempting to connect to lobby host...",
+	}
+	preliminaryMsgOut := &api.Message{
+		Content: &api.Message_JoinLobbyResponse{JoinLobbyResponse: preliminaryResp},
+	}
+	preliminaryOut, err := proto.Marshal(preliminaryMsgOut)
+	if err != nil {
+		log.Printf("Failed to marshal preliminary JoinLobbyResponse: %v", err)
+		return
+	}
+	_, err = s.conn.WriteToUDP(preliminaryOut, addr)
+	if err != nil {
+		log.Printf("Failed to send preliminary JoinLobbyResponse: %v", err)
+		return
+	}
+
+	log.Printf("Triggering connection between new client %s and host %s for lobby %s", req.ClientId, lobby.HostClientID, req.LobbyId)
+	s.sendConnectionInstruction(client.Addr, lobby.HostClientID, hostClient)
+	s.sendConnectionInstruction(hostClient.Addr, req.ClientId, client)
+
+	// Wait for PeerConnectionReady from host
+	go s.waitForPeerConnection(req.LobbyId, req.ClientId)
+}
+
+func (s *Server) waitForPeerConnection(lobbyID string, newPeerID string) {
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	// This is a simplified example. In a real application, you'd use a more robust
+	// mechanism to wait for the PeerConnectionReady message, probably involving channels.
+	// For now, we'll just sleep and check. This is not ideal.
+	// A better approach would be to have a pending connections map.
+	// We will implement this if the current approach is not sufficient.
+
+	// The `handlePeerConnectionReady` function will handle the actual logic.
+	// This function's role is mostly to timeout the connection attempt.
+	// We'll check periodically if the peer was added.
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout.C:
+			s.mut.Lock()
+			lobby, lobbyExists := s.Lobbies[lobbyID]
+			if lobbyExists {
+				if _, memberExists := lobby.Members[newPeerID]; !memberExists {
+					log.Printf("Connection timeout for peer %s in lobby %s", newPeerID, lobbyID)
+					// Notify the joining client that they failed to connect
+					if client, ok := s.Clients[newPeerID]; ok {
+						s.sendErrorResponse(client.Addr, "Failed to establish connection with lobby host")
+					}
+				}
+			}
+			s.mut.Unlock()
+			return
+		case <-ticker.C:
+			s.mut.RLock()
+			lobby, lobbyExists := s.Lobbies[lobbyID]
+			if lobbyExists {
+				if _, memberExists := lobby.Members[newPeerID]; memberExists {
+					s.mut.RUnlock()
+					return // Success!
+				}
+			}
+			s.mut.RUnlock()
+		}
+	}
+}
+
+func (s *Server) handlePeerConnectionReady(msg *api.Message_PeerConnectionReady, addr *net.UDPAddr) {
+	req := msg.PeerConnectionReady
+	log.Printf("Handling PeerConnectionReady for lobby %s, new peer %s", req.LobbyId, req.NewPeerId)
+
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	lobby, lobbyExists := s.Lobbies[req.LobbyId]
+	if !lobbyExists {
+		log.Printf("Lobby %s not found for PeerConnectionReady", req.LobbyId)
+		return
+	}
+
+	// Verify the message is from the host
+	if _, ok := s.Clients[lobby.HostClientID]; !ok || !s.Clients[lobby.HostClientID].Addr.IP.Equal(addr.IP) || s.Clients[lobby.HostClientID].Addr.Port != addr.Port {
+		log.Printf("PeerConnectionReady for lobby %s not from host. Expected %s, got %s", req.LobbyId, s.Clients[lobby.HostClientID].Addr.String(), addr.String())
+		return
+	}
+
+	// Add the new peer to the lobby
+	newPeer, peerExists := s.Clients[req.NewPeerId]
+	if !peerExists {
+		log.Printf("New peer %s not found for PeerConnectionReady", req.NewPeerId)
+		return
+	}
+	lobby.Members[req.NewPeerId] = newPeer
+	log.Printf("Client %s successfully joined lobby %s", req.NewPeerId, req.LobbyId)
 
 	// Prepare lobby members list for response
 	var members []*api.ClientInfo
@@ -468,35 +574,33 @@ func (s *Server) handleJoinLobbyRequest(msg *api.Message_JoinLobbyRequest, addr 
 		})
 	}
 
-	// Send response to joining client
-	resp := &api.JoinLobbyResponse{
+	// Send JoinLobbySuccess to the newly joined client
+	joinResp := &api.JoinLobbySuccess{
 		Success:      true,
 		LobbyId:      req.LobbyId,
-		Message:      "Successfully joined lobby",
+		Message:      "Successfully joined lobby and connected to host",
 		LobbyMembers: members,
 	}
-
 	msgOut := &api.Message{
-		Content: &api.Message_JoinLobbyResponse{JoinLobbyResponse: resp},
+		Content: &api.Message_JoinLobbySuccess{JoinLobbySuccess: joinResp},
 	}
-
 	out, err := proto.Marshal(msgOut)
 	if err != nil {
-		log.Printf("Failed to marshal JoinLobbyResponse: %v", err)
-		return
+		log.Printf("Failed to marshal JoinLobbySuccess for new peer: %v", err)
+	} else {
+		_, err = s.conn.WriteToUDP(out, newPeer.Addr)
+		if err != nil {
+			log.Printf("Failed to send JoinLobbySuccess to new peer %s: %v", req.NewPeerId, err)
+		}
 	}
 
-	_, err = s.conn.WriteToUDP(out, addr)
-	if err != nil {
-		log.Printf("Failed to send JoinLobbyResponse: %v", err)
-	}
+	// Notify all other lobby members of the new player
+	s.notifyLobbyMembers(lobby, req.NewPeerId, "player_joined")
 
-	// Notify other lobby members about the new player
-	s.notifyLobbyMembers(lobby, req.ClientId, "player_joined")
-
-	// Trigger NAT punching between new player and existing members
-	s.triggerLobbyConnections(lobby, req.ClientId)
+	// Trigger connections between the new player and all other existing members
+	s.triggerLobbyConnections(lobby, req.NewPeerId)
 }
+
 
 func (s *Server) handleLobbyListRequest(msg *api.Message_LobbyListRequest, addr *net.UDPAddr) {
 	req := msg.LobbyListRequest

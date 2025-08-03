@@ -34,8 +34,24 @@ message Message {
     LeaveLobbyRequest leave_lobby_request = 20;
     LeaveLobbyResponse leave_lobby_response = 21;
     PeerLeft peer_left = 22;
+    PeerConnectionReady peer_connection_ready = 23;
+    JoinLobbySuccess join_lobby_success = 24;
   }
 }
+
+message PeerConnectionReady {
+  string lobby_id = 1;
+  string new_peer_id = 2;
+}
+
+message JoinLobbySuccess {
+  bool success = 1;
+  string lobby_id = 2;
+  string message = 3;
+  repeated ClientInfo lobby_members = 4;
+}
+
+
 
 enum NatType {
   UNKNOWN = 0;

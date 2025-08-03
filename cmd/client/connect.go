@@ -97,6 +97,9 @@ func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, add
 			return // Already connected
 		}
 		peer.state = CONNECTED
+		if c.isLobbyHost() {
+			c.sendPeerConnectionReady(c.CurrentLobby.ID, msg.ClientId)
+		}
 	} else {
 		log.Printf("Received ConnectionEstablished from unknown peer %s", msg.ClientId)
 		return
@@ -115,6 +118,29 @@ func (c *Client) handleConnectionEstablished(msg *api.ConnectionEstablished, add
 	// Start connection verification
 	go c.verifyConnection(c.CurrentLobby.Peers[msg.ClientId], addr)
 }
+
+func (c *Client) sendPeerConnectionReady(lobbyID, peerID string) {
+	log.Printf("Informing server that connection with peer %s is ready.", peerID)
+	req := &api.PeerConnectionReady{
+		LobbyId:   lobbyID,
+		NewPeerId: peerID,
+	}
+	msg := &api.Message{
+		Content: &api.Message_PeerConnectionReady{PeerConnectionReady: req},
+	}
+
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal PeerConnectionReady: %v", err)
+		return
+	}
+
+	_, err = c.conn.WriteTo(out, c.srvAddr)
+	if err != nil {
+		log.Printf("Failed to send PeerConnectionReady: %v", err)
+	}
+}
+
 
 // holePunch performs NAT traversal by sending packets to the peer's public and local addresses.
 func (c *Client) holePunch(peer *Peer) {

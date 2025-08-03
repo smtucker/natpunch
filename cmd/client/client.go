@@ -451,14 +451,11 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 	if c.CurrentLobby != nil && c.CurrentLobby.ID == update.LobbyId {
 		c.lobbyMutex.Lock()
 		defer c.lobbyMutex.Unlock()
-		c.CurrentLobby = &LobbyInfo{
-			ID:             update.LobbyInfo.LobbyId,
-			Name:           update.LobbyInfo.LobbyName,
-			HostClientID:   update.LobbyInfo.HostClientId,
-			CurrentPlayers: update.LobbyInfo.CurrentPlayers,
-			MaxPlayers:     update.LobbyInfo.MaxPlayers,
-			Members:        update.LobbyInfo.Members,
-		}
+		c.CurrentLobby.Name = update.LobbyInfo.LobbyName
+		c.CurrentLobby.HostClientID = update.LobbyInfo.HostClientId
+		c.CurrentLobby.CurrentPlayers = update.LobbyInfo.CurrentPlayers
+		c.CurrentLobby.MaxPlayers = update.LobbyInfo.MaxPlayers
+		c.CurrentLobby.Members = update.LobbyInfo.Members
 
 		// Update the Peers map
 		for _, member := range update.LobbyInfo.Members {

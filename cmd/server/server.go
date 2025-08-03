@@ -11,33 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	api "natpunch/proto/gen/go"
-
 	"google.golang.org/protobuf/proto"
+
+	api "natpunch/proto/gen/go"
+	. "natpunch/pkg/models"
 )
 
 var bufferSize = 1024
 
 // keepAliveTimeout is the duration after which a client is considered disconnected
 const keepAliveTimeout = 5 * time.Second
-
-// ClientInfo is the truct to store client info
-type ClientInfo struct {
-	Addr      *net.UDPAddr
-	LocalAddr *net.UDPAddr
-	Type      api.NatType
-	KeepAlive time.Time
-}
-
-// LobbyInfo represents a game lobby
-type LobbyInfo struct {
-	ID           string
-	Name         string
-	HostClientID string
-	MaxPlayers   uint32
-	Members      map[string]*ClientInfo
-	CreatedAt    time.Time
-}
 
 // Server is the main nat traversal middleman server
 // create a an empty server and call it's Run method to
@@ -89,18 +72,6 @@ func (s *Server) run(addr string, port string) {
 	log.Println("Shutdown complete")
 }
 
-func (s *Server) purgeClients() {
-	now := time.Now()
-	for id, client := range s.Clients {
-		if now.Sub(client.KeepAlive) > keepAliveTimeout {
-			log.Printf("Purging client %s due to inactivity", id)
-			s.mut.Lock()
-			delete(s.Clients, id)
-			s.mut.Unlock()
-		}
-	}
-}
-
 func (s *Server) listener() {
 	defer s.wg.Done()
 
@@ -147,7 +118,7 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 	switch content := msg.Content.(type) {
 	case *api.Message_RegisterRequest:
 		log.Println("Received RegisterRequest:", content.RegisterRequest)
-		s.registerClient(*content, addr)
+		s.registerClient(content, addr)
 	case *api.Message_ConnectRequest:
 		s.handleConnectRequest(content, addr)
 	case *api.Message_KeepAlive:
@@ -174,67 +145,6 @@ func (s *Server) handleMessage(data []byte, addr *net.UDPAddr) error {
 	return nil
 }
 
-func (s *Server) handleLeaveLobbyRequest(msg *api.Message_LeaveLobbyRequest, addr *net.UDPAddr) {
-	req := msg.LeaveLobbyRequest
-
-	// Find lobby
-	s.mut.Lock()
-	lobby, lobbyExists := s.Lobbies[req.LobbyId]
-	if !lobbyExists {
-		s.mut.Unlock()
-		s.sendErrorResponse(addr, "Lobby not found")
-		return
-	}
-
-	// Remove client from lobby
-	if _, ok := lobby.Members[req.ClientId]; ok {
-		delete(lobby.Members, req.ClientId)
-		log.Printf("Client %s left lobby %s", req.ClientId, req.LobbyId)
-	} else {
-		s.mut.Unlock()
-		s.sendErrorResponse(addr, "Client not in lobby")
-		return
-	}
-
-	// Notify remaining members
-	s.notifyLobbyMembersOfPeerLeft(lobby, req.ClientId)
-
-	// If no members are left, delete the lobby
-	if len(lobby.Members) == 0 {
-		delete(s.Lobbies, req.LobbyId)
-		log.Printf("Lobby %s is empty and has been deleted", req.LobbyId)
-	} else if lobby.HostClientID == req.ClientId {
-		// If the host left, assign a new host
-		for newHostID := range lobby.Members {
-			lobby.HostClientID = newHostID
-			log.Printf("Lobby %s host changed to %s", req.LobbyId, newHostID)
-			break
-		}
-	}
-	s.mut.Unlock()
-
-	// Send success response
-	resp := &api.LeaveLobbyResponse{
-		Success: true,
-		Message: "Successfully left lobby",
-	}
-
-	msgOut := &api.Message{
-		Content: &api.Message_LeaveLobbyResponse{LeaveLobbyResponse: resp},
-	}
-
-	out, err := proto.Marshal(msgOut)
-	if err != nil {
-		log.Printf("Failed to marshal LeaveLobbyResponse: %v", err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, addr)
-	if err != nil {
-		log.Printf("Failed to send LeaveLobbyResponse: %v", err)
-	}
-}
-
 func (s *Server) notifyLobbyMembersOfPeerLeft(lobby *LobbyInfo, peerLeftID string) {
 	msg := &api.Message{
 		Content: &api.Message_PeerLeft{
@@ -258,401 +168,14 @@ func (s *Server) notifyLobbyMembersOfPeerLeft(lobby *LobbyInfo, peerLeftID strin
 	}
 }
 
-
-
-func (s *Server) handleConnectRequest(msg *api.Message_ConnectRequest, addr *net.UDPAddr) {
-	req := msg.ConnectRequest
-	log.Printf("Handling ConnectRequest from %s to %s", req.SourceClientId, req.DestinationClientId)
-
-	s.mut.RLock()
-	sourceClient, sourceOk := s.Clients[req.SourceClientId]
-	destClient, destOk := s.Clients[req.DestinationClientId]
-	s.mut.RUnlock()
-
-	if !sourceOk {
-		log.Printf("ConnectRequest from unknown client: %s", req.SourceClientId)
-		return
-	}
-
-	if !sourceClient.Addr.IP.Equal(addr.IP) || sourceClient.Addr.Port != addr.Port {
-		log.Printf("ConnectRequest from %s has mismatched address. Expected %s, got %s", req.SourceClientId, sourceClient.Addr.String(), addr.String())
-		return
-	}
-
-	if !destOk {
-		log.Printf("Destination client not found: %s", req.DestinationClientId)
-		// Send an error response back to the source client
-		s.sendErrorResponse(sourceClient.Addr, fmt.Sprintf("Destination client %s not found", req.DestinationClientId))
-		return
-	}
-
-	// Send connection details of the destination to the source
-	s.sendConnectionInstruction(sourceClient.Addr, req.DestinationClientId, destClient)
-
-	// Send connection details of the source to the destination
-	s.sendConnectionInstruction(destClient.Addr, req.SourceClientId, sourceClient)
-	log.Printf("Exchanged endpoint information between %s and %s", req.SourceClientId, req.DestinationClientId)
-}
-
-func (s *Server) sendConnectionInstruction(recipientAddr *net.UDPAddr, peerID string, peerInfo *ClientInfo) {
-	resp := &api.ConnectionInstruction{
-		Accepted: true,
-		ClientId: peerID,
-		PublicEndpoint: &api.Endpoint{
-			IpAddress: peerInfo.Addr.IP.String(),
-			Port:      uint32(peerInfo.Addr.Port),
-		},
-		LocalEndpoint: &api.Endpoint{
-			IpAddress: peerInfo.LocalAddr.IP.String(),
-			Port:      uint32(peerInfo.LocalAddr.Port),
-		},
-	}
-
-	msg := &api.Message{
-		Content: &api.Message_ConnectionInstruction{ConnectionInstruction: resp},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Printf("Failed to marshal ConnectionInstruction for %s: %v", recipientAddr, err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, recipientAddr)
-	if err != nil {
-		log.Printf("Failed to send ConnectionInstruction to %s: %v", recipientAddr, err)
-	}
-}
-
-func (s *Server) handleKeepAlive(msg *api.Message_KeepAlive, addr *net.UDPAddr) {
-	ci, ok := s.Clients[msg.KeepAlive.ClientId]
-	if !ok {
-		log.Println("Received KeepAlive for unknown client:", msg.KeepAlive.ClientId)
-		return
-	}
-	if !ci.Addr.IP.Equal(addr.IP) {
-		log.Println(
-			"Received KeepAlive from different IP address:",
-			msg.KeepAlive.ClientId, "expected:", ci.Addr.IP,
-			"got:", addr.IP)
-		return
-	}
-
-	// If we got this far we have a valid client and should update the keep alive
-	s.mut.Lock()
-	ci.KeepAlive = time.Now()
-	defer s.mut.Unlock()
-}
-
 func (s *Server) sendErrorResponse(recipientAddr *net.UDPAddr, errorMessage string) {
 	resp := &api.Error{
 		Message: errorMessage,
 	}
 
-	msg := &api.Message{
+	s.sendResponse(recipientAddr, &api.Message{
 		Content: &api.Message_Error{Error: resp},
-	}
-
-	out, err := proto.Marshal(msg)
-	if err != nil {
-		log.Printf("Failed to marshal Error response: %v", err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, recipientAddr)
-	if err != nil {
-		log.Printf("Failed to send Error response to %s: %v", recipientAddr, err)
-	}
-}
-
-func (s *Server) handleCreateLobbyRequest(msg *api.Message_CreateLobbyRequest, addr *net.UDPAddr) {
-	req := msg.CreateLobbyRequest
-
-	// Verify client exists
-	s.mut.RLock()
-	client, exists := s.Clients[req.ClientId]
-	s.mut.RUnlock()
-
-	if !exists {
-		s.sendErrorResponse(addr, "Client not registered")
-		return
-	}
-
-	// Generate lobby ID
-	lobbyID := fmt.Sprintf("lobby_%d", time.Now().UnixNano())
-
-	// Create lobby
-	lobby := &LobbyInfo{
-		ID:           lobbyID,
-		Name:         req.LobbyName,
-		HostClientID: req.ClientId,
-		MaxPlayers:   req.MaxPlayers,
-		Members:      make(map[string]*ClientInfo),
-		CreatedAt:    time.Now(),
-	}
-	lobby.Members[req.ClientId] = client
-
-	// Add lobby to server
-	s.mut.Lock()
-	s.Lobbies[lobbyID] = lobby
-	s.mut.Unlock()
-
-	log.Printf("Created lobby %s: %s (host: %s)", lobbyID, req.LobbyName, req.ClientId)
-
-	// Send response
-	resp := &api.CreateLobbyResponse{
-		Success:   true,
-		LobbyId:   lobbyID,
-		LobbyName: req.LobbyName,
-		Message:   "Lobby created successfully",
-	}
-
-	msgOut := &api.Message{
-		Content: &api.Message_CreateLobbyResponse{CreateLobbyResponse: resp},
-	}
-
-	out, err := proto.Marshal(msgOut)
-	if err != nil {
-		log.Printf("Failed to marshal CreateLobbyResponse: %v", err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, addr)
-	if err != nil {
-		log.Printf("Failed to send CreateLobbyResponse: %v", err)
-	}
-}
-
-func (s *Server) handleJoinLobbyRequest(msg *api.Message_JoinLobbyRequest, addr *net.UDPAddr) {
-	req := msg.JoinLobbyRequest
-
-	// Verify client exists
-	s.mut.RLock()
-	client, exists := s.Clients[req.ClientId]
-	s.mut.RUnlock()
-
-	if !exists {
-		s.sendErrorResponse(addr, "Client not registered")
-		return
-	}
-
-	// Find lobby
-	s.mut.RLock()
-	lobby, lobbyExists := s.Lobbies[req.LobbyId]
-	s.mut.RUnlock()
-
-	if !lobbyExists {
-		s.sendErrorResponse(addr, "Lobby not found")
-		return
-	}
-
-	// Check if lobby is full
-	if uint32(len(lobby.Members)) >= lobby.MaxPlayers {
-		s.sendErrorResponse(addr, "Lobby is full")
-		return
-	}
-
-	// Trigger connection between new client and host
-	hostClient, hostExists := s.Clients[lobby.HostClientID]
-	if !hostExists {
-		s.sendErrorResponse(addr, "Lobby host not found")
-		return
-	}
-
-	// Send a preliminary JoinLobbyResponse to the joining client to indicate the process has started
-	preliminaryResp := &api.JoinLobbyResponse{
-		Success: true,
-		LobbyId: req.LobbyId,
-		Message: "Attempting to connect to lobby host...",
-	}
-	preliminaryMsgOut := &api.Message{
-		Content: &api.Message_JoinLobbyResponse{JoinLobbyResponse: preliminaryResp},
-	}
-	preliminaryOut, err := proto.Marshal(preliminaryMsgOut)
-	if err != nil {
-		log.Printf("Failed to marshal preliminary JoinLobbyResponse: %v", err)
-		return
-	}
-	_, err = s.conn.WriteToUDP(preliminaryOut, addr)
-	if err != nil {
-		log.Printf("Failed to send preliminary JoinLobbyResponse: %v", err)
-		return
-	}
-
-	log.Printf("Triggering connection between new client %s and host %s for lobby %s", req.ClientId, lobby.HostClientID, req.LobbyId)
-	s.sendConnectionInstruction(client.Addr, lobby.HostClientID, hostClient)
-	s.sendConnectionInstruction(hostClient.Addr, req.ClientId, client)
-
-	// Wait for PeerConnectionReady from host
-	go s.waitForPeerConnection(req.LobbyId, req.ClientId)
-}
-
-func (s *Server) waitForPeerConnection(lobbyID string, newPeerID string) {
-	timeout := time.NewTimer(10 * time.Second)
-	defer timeout.Stop()
-
-	// This is a simplified example. In a real application, you'd use a more robust
-	// mechanism to wait for the PeerConnectionReady message, probably involving channels.
-	// For now, we'll just sleep and check. This is not ideal.
-	// A better approach would be to have a pending connections map.
-	// We will implement this if the current approach is not sufficient.
-
-	// The `handlePeerConnectionReady` function will handle the actual logic.
-	// This function's role is mostly to timeout the connection attempt.
-	// We'll check periodically if the peer was added.
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout.C:
-			s.mut.Lock()
-			lobby, lobbyExists := s.Lobbies[lobbyID]
-			if lobbyExists {
-				if _, memberExists := lobby.Members[newPeerID]; !memberExists {
-					log.Printf("Connection timeout for peer %s in lobby %s", newPeerID, lobbyID)
-					// Notify the joining client that they failed to connect
-					if client, ok := s.Clients[newPeerID]; ok {
-						s.sendErrorResponse(client.Addr, "Failed to establish connection with lobby host")
-					}
-				}
-			}
-			s.mut.Unlock()
-			return
-		case <-ticker.C:
-			s.mut.RLock()
-			lobby, lobbyExists := s.Lobbies[lobbyID]
-			if lobbyExists {
-				if _, memberExists := lobby.Members[newPeerID]; memberExists {
-					s.mut.RUnlock()
-					return // Success!
-				}
-			}
-			s.mut.RUnlock()
-		}
-	}
-}
-
-func (s *Server) handlePeerConnectionReady(msg *api.Message_PeerConnectionReady, addr *net.UDPAddr) {
-	req := msg.PeerConnectionReady
-	log.Printf("Handling PeerConnectionReady for lobby %s, new peer %s", req.LobbyId, req.NewPeerId)
-
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
-	lobby, lobbyExists := s.Lobbies[req.LobbyId]
-	if !lobbyExists {
-		log.Printf("Lobby %s not found for PeerConnectionReady", req.LobbyId)
-		return
-	}
-
-	// Verify the message is from the host
-	if _, ok := s.Clients[lobby.HostClientID]; !ok || !s.Clients[lobby.HostClientID].Addr.IP.Equal(addr.IP) || s.Clients[lobby.HostClientID].Addr.Port != addr.Port {
-		log.Printf("PeerConnectionReady for lobby %s not from host. Expected %s, got %s", req.LobbyId, s.Clients[lobby.HostClientID].Addr.String(), addr.String())
-		return
-	}
-
-	// Add the new peer to the lobby
-	newPeer, peerExists := s.Clients[req.NewPeerId]
-	if !peerExists {
-		log.Printf("New peer %s not found for PeerConnectionReady", req.NewPeerId)
-		return
-	}
-	lobby.Members[req.NewPeerId] = newPeer
-	log.Printf("Client %s successfully joined lobby %s", req.NewPeerId, req.LobbyId)
-
-	// Prepare lobby members list for response
-	var members []*api.ClientInfo
-	for memberID, memberClient := range lobby.Members {
-		members = append(members, &api.ClientInfo{
-			ClientId: memberID,
-			PublicEndpoint: &api.Endpoint{
-				IpAddress: memberClient.Addr.IP.String(),
-				Port:      uint32(memberClient.Addr.Port),
-			},
-		})
-	}
-
-	// Send JoinLobbySuccess to the newly joined client
-	joinResp := &api.JoinLobbySuccess{
-		Success:      true,
-		LobbyId:      req.LobbyId,
-		Message:      "Successfully joined lobby and connected to host",
-		LobbyMembers: members,
-	}
-	msgOut := &api.Message{
-		Content: &api.Message_JoinLobbySuccess{JoinLobbySuccess: joinResp},
-	}
-	out, err := proto.Marshal(msgOut)
-	if err != nil {
-		log.Printf("Failed to marshal JoinLobbySuccess for new peer: %v", err)
-	} else {
-		_, err = s.conn.WriteToUDP(out, newPeer.Addr)
-		if err != nil {
-			log.Printf("Failed to send JoinLobbySuccess to new peer %s: %v", req.NewPeerId, err)
-		}
-	}
-
-	// Notify all other lobby members of the new player
-	s.notifyLobbyMembers(lobby, req.NewPeerId, "player_joined")
-
-	// Trigger connections between the new player and all other existing members
-	s.triggerLobbyConnections(lobby, req.NewPeerId)
-}
-
-
-func (s *Server) handleLobbyListRequest(msg *api.Message_LobbyListRequest, addr *net.UDPAddr) {
-	req := msg.LobbyListRequest
-
-	s.mut.RLock()
-	defer s.mut.RUnlock()
-
-	var lobbies []*api.LobbyInfo
-	for lobbyID, lobby := range s.Lobbies {
-		// Convert lobby members to API format
-		var members []*api.ClientInfo
-		for memberID, memberClient := range lobby.Members {
-			members = append(members, &api.ClientInfo{
-				ClientId: memberID,
-				PublicEndpoint: &api.Endpoint{
-					IpAddress: memberClient.Addr.IP.String(),
-					Port:      uint32(memberClient.Addr.Port),
-				},
-			})
-		}
-
-		lobbies = append(lobbies, &api.LobbyInfo{
-			LobbyId:        lobbyID,
-			LobbyName:      lobby.Name,
-			HostClientId:   lobby.HostClientID,
-			CurrentPlayers: uint32(len(lobby.Members)),
-			MaxPlayers:     lobby.MaxPlayers,
-			Members:        members,
-		})
-	}
-
-	resp := &api.LobbyListResponse{
-		Success:   true,
-		RequestId: req.RequestId,
-		Lobbies:   lobbies,
-		Message:   "Lobby list retrieved successfully",
-	}
-
-	msgOut := &api.Message{
-		Content: &api.Message_LobbyListResponse{LobbyListResponse: resp},
-	}
-
-	out, err := proto.Marshal(msgOut)
-	if err != nil {
-		log.Printf("Failed to marshal LobbyListResponse: %v", err)
-		return
-	}
-
-	_, err = s.conn.WriteToUDP(out, addr)
-	if err != nil {
-		log.Printf("Failed to send LobbyListResponse: %v", err)
-	}
+	})
 }
 
 func (s *Server) notifyLobbyMembers(lobby *LobbyInfo, newPlayerID string, updateType string) {
@@ -726,8 +249,20 @@ func (s *Server) triggerLobbyConnections(lobby *LobbyInfo, newPlayerID string) {
 	}
 }
 
+func (s *Server) sendResponse(addr *net.UDPAddr, msg *api.Message) {
+	out, err := proto.Marshal(msg)
+	if err != nil {
+		log.Printf("Failed to marshal message: %v", err)
+		return
+	}
+	_, err = s.conn.WriteToUDP(out, addr)
+	if err != nil {
+		log.Printf("Failed to send message to %s: %v", addr, err)
+	}
+}
+
 func main() {
-	addr := flag.String("a", "127.0.0.1", "Address to bind to")
+		addr := flag.String("a", "0.0.0.0", "Address to bind to")
 	port := flag.String("p", "8080", "Port to use")
 
 	flag.Parse()
@@ -735,3 +270,4 @@ func main() {
 	srv := &Server{}
 	srv.run(*addr, *port)
 }
+

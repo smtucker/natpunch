@@ -116,7 +116,7 @@ func (c *Client) listen() {
 			case *api.Message_RegisterResponse:
 				c.handleRegisterResponse(content.RegisterResponse)
 			default:
-				fmt.Println("Received:", string(buf[:n]))
+				log.Println("Received:", string(buf[:n]))
 			}
 		}
 	}

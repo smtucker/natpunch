@@ -85,17 +85,17 @@ func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 			Peers:          make(map[string]*Peer),
 		}
 	} else {
-		fmt.Printf("❌ Failed to create lobby: %s\n", resp.Message)
+		log.Printf("❌ Failed to create lobby: %s\n", resp.Message)
 	}
 }
 
 func (c *Client) handleJoinLobbyResponse(resp *api.JoinLobbyResponse) {
 	if resp.Success {
-		fmt.Printf("Attempting to join lobby %s...\n", resp.LobbyId)
+		log.Printf("Attempting to join lobby %s...\n", resp.LobbyId)
 		// Connection to host will be initiated by the server.
 		// Peer list will be populated upon successful connection.
 	} else {
-		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
+		log.Printf("❌ Failed to join lobby: %s\n", resp.Message)
 	}
 }
 
@@ -103,10 +103,10 @@ func (c *Client) handleJoinLobbySuccess(resp *api.JoinLobbySuccess) {
 	c.lobbyMutex.Lock()
 	defer c.lobbyMutex.Unlock()
 	if resp.Success {
-		fmt.Printf("✅ Successfully joined lobby %s!\n", resp.LobbyId)
-		fmt.Printf("📋 Lobby members (%d):\n", len(resp.LobbyMembers))
+		log.Printf("✅ Successfully joined lobby %s!\n", resp.LobbyId)
+		log.Printf("📋 Lobby members (%d):\n", len(resp.LobbyMembers))
 		for i, member := range resp.LobbyMembers {
-			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
+			log.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
 		}
 
 		// Convert to local LobbyInfo
@@ -126,7 +126,7 @@ func (c *Client) handleJoinLobbySuccess(resp *api.JoinLobbySuccess) {
 			}
 		}
 	} else {
-		fmt.Printf("❌ Failed to join lobby: %s\n", resp.Message)
+		log.Printf("❌ Failed to join lobby: %s\n", resp.Message)
 	}
 }
 
@@ -134,7 +134,7 @@ func (c *Client) handleLobbyListResponse(resp *api.LobbyListResponse) {
 	c.lobbyMutex.Lock()
 	defer c.lobbyMutex.Unlock()
 	if resp.Success {
-		fmt.Println("📋 Available Lobbies:")
+		log.Println("📋 Available Lobbies:")
 		c.AvailableLobbies = make([]*LobbyInfo, len(resp.Lobbies))
 		for i, lobby := range resp.Lobbies {
 			c.AvailableLobbies[i] = &LobbyInfo{
@@ -145,18 +145,18 @@ func (c *Client) handleLobbyListResponse(resp *api.LobbyListResponse) {
 				MaxPlayers:     lobby.MaxPlayers,
 				Members:        lobby.Members,
 			}
-			fmt.Printf("%d - %s (Host: %s, Players: %d/%d)\n",
+			log.Printf("%d - %s (Host: %s, Players: %d/%d)\n",
 				i, lobby.LobbyName, lobby.HostClientId, lobby.CurrentPlayers, lobby.MaxPlayers)
 		}
 	} else {
-		fmt.Printf("❌ Failed to get lobby list: %s\n", resp.Message)
+		log.Printf("❌ Failed to get lobby list: %s\n", resp.Message)
 	}
 }
 
 func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 	c.lobbyMutex.Lock()
 	defer c.lobbyMutex.Unlock()
-	fmt.Printf("🔄 Lobby update for %s: %s\n", update.LobbyId, update.UpdateType)
+	log.Printf("🔄 Lobby update for %s: %s\n", update.LobbyId, update.UpdateType)
 
 	// Update current lobby if it matches
 	if c.CurrentLobby != nil && c.CurrentLobby.ID == update.LobbyId {
@@ -177,9 +177,9 @@ func (c *Client) handleLobbyUpdate(update *api.LobbyUpdate) {
 			}
 		}
 
-		fmt.Printf("📋 Updated lobby members (%d):\n", len(update.LobbyInfo.Members))
+		log.Printf("📋 Updated lobby members (%d):\n", len(update.LobbyInfo.Members))
 		for i, member := range update.LobbyInfo.Members {
-			fmt.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
+			log.Printf("  %d - %s: %s:%d\n", i, member.ClientId, member.PublicEndpoint.IpAddress, member.PublicEndpoint.Port)
 		}
 	}
 }
@@ -188,10 +188,10 @@ func (c *Client) handleLeaveLobbyResponse(resp *api.LeaveLobbyResponse) {
 	if resp.Success {
 		c.lobbyMutex.Lock()
 		defer c.lobbyMutex.Unlock()
-		fmt.Printf("✅ Left lobby successfully!\n")
+		log.Printf("✅ Left lobby successfully!\n")
 		c.CurrentLobby = nil
 	} else {
-		fmt.Printf("❌ Failed to leave lobby: %s\n", resp.Message)
+		log.Printf("❌ Failed to leave lobby: %s\n", resp.Message)
 	}
 }
 
@@ -210,5 +210,5 @@ func (c *Client) handlePeerLeft(resp *api.PeerLeft) {
 	c.CurrentLobby.Members = newMembers
 	c.CurrentLobby.CurrentPlayers = uint32(len(newMembers))
 	delete(c.CurrentLobby.Peers, resp.ClientId)
-	fmt.Printf("Peer %s has left the lobby.\n", resp.ClientId)
+	log.Printf("Peer %s has left the lobby.\n", resp.ClientId)
 }

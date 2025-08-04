@@ -7,14 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-)
-
-type (
-	errMsg error
 )
 
 const (
@@ -22,85 +18,104 @@ const (
 )
 
 var (
-	docStyle      = lipgloss.NewStyle().Margin(1, 2)
+	docStyle      = lipgloss.NewStyle().Margin(1, 1)
 	prompt        = "> "
 	outputStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).BorderForeground(lipgloss.Color("63"))
 	lobbyStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).BorderForeground(lipgloss.Color("63"))
-	textareaStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).BorderForeground(lipgloss.Color("63"))
+	inputStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).BorderForeground(lipgloss.Color("63"))
 )
 
 type model struct {
 	client         *Client
 	lobbyViewport  viewport.Model
 	outputViewport viewport.Model
-	textarea       textarea.Model
+	textinput      textinput.Model
 	history        []string
 	err            error
+	ready          bool
 }
 
 type lobbyUpdateMsg string
 type outputUpdateMsg string
 
 func initialModel(client *Client) model {
-	ta := textarea.New()
-	ta.Placeholder = "Enter command..."
-	ta.Focus()
-	ta.Prompt = prompt
-	ta.CharLimit = 280
+	ti := textinput.New()
+	ti.Placeholder = "Enter command..."
+	ti.Focus()
+	ti.Prompt = prompt
+	ti.CharLimit = 280
 
-	outputVp := viewport.New(80, 20)
+	outputVp := viewport.New(0, 0)
 	outputVp.Style = outputStyle
 	outputVp.SetContent("Welcome to the NAT Punching Client!")
 
-	lobbyVp := viewport.New(40, 20)
+	lobbyVp := viewport.New(0, 0)
 	lobbyVp.Style = lobbyStyle
 	lobbyVp.SetContent("Lobby status will appear here.")
 
 	return model{
-		textarea:       ta,
+		textinput:      ti,
 		outputViewport: outputVp,
 		lobbyViewport:  lobbyVp,
 		history:        []string{"Welcome to the NAT Punching Client!"},
 		err:            nil,
 		client:         client,
+		ready:          false,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.updateStatusCmd())
+	return tea.Batch(textinput.Blink, m.updateStatusCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
-		tiCmd  tea.Cmd
+		iCmd   tea.Cmd
 		ovpCmd tea.Cmd
 		lvpCmd tea.Cmd
 	)
 
-	m.textarea, tiCmd = m.textarea.Update(msg)
+	m.textinput, iCmd = m.textinput.Update(msg)
 	m.outputViewport, ovpCmd = m.outputViewport.Update(msg)
 	m.lobbyViewport, lvpCmd = m.lobbyViewport.Update(msg)
 
-	val := m.textarea.Value()
-	if strings.Contains(val, "\n") {
-		m.textarea.SetValue(strings.ReplaceAll(val, "\n", ""))
-	}
-
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		verticalMargin, horizontalMargin := docStyle.GetFrameSize()
+		const inputHeight = 3 // Account for border and padding
+		viewportsHeight := msg.Height - inputHeight - verticalMargin
+
+		// Panes are horizontal, so they split the width
+		lobbyWidth := msg.Width / 3
+		outputWidth := msg.Width - lobbyWidth - horizontalMargin
+
+		m.lobbyViewport.Width = lobbyWidth
+		m.lobbyViewport.Height = viewportsHeight
+		m.outputViewport.Width = outputWidth
+		m.outputViewport.Height = viewportsHeight
+
+		// The text input takes the full width of the window, minus the margins, borders, and padding of its container.
+		m.textinput.Width = msg.Width - docStyle.GetHorizontalFrameSize() - inputStyle.GetHorizontalFrameSize() - lipgloss.Width(m.textinput.Prompt)
+		if !m.ready {
+			m.ready = true
+		}
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			cmdStr := m.textarea.Value()
+			cmdStr := m.textinput.Value()
 			if cmdStr == "exit" {
 				m.client.stopClient()
 				return m, tea.Quit
 			}
 			m.history = append(m.history, "> "+cmdStr)
 			go m.client.handleCommand(cmdStr)
-			m.textarea.Reset()
-			m.outputViewport.GotoBottom()
+			m.textinput.Reset()
+			if m.ready {
+				m.outputViewport.GotoBottom()
+			}
 		}
 	case lobbyUpdateMsg:
 		m.lobbyViewport.SetContent(string(msg))
@@ -111,30 +126,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.history = m.history[len(m.history)-tuiHistorySize:]
 		}
 		m.outputViewport.SetContent(strings.Join(m.history, "\n"))
-		m.outputViewport.GotoBottom()
+		if m.ready {
+			m.outputViewport.GotoBottom()
+		}
 		return m, nil
-	case errMsg:
+	case error:
 		m.err = msg
 		return m, nil
 	}
 
-	return m, tea.Batch(tiCmd, ovpCmd, lvpCmd)
+	return m, tea.Batch(iCmd, ovpCmd, lvpCmd)
 }
 
 func (m model) View() string {
-	m.outputViewport.Style = outputStyle
-	m.lobbyViewport.Style = lobbyStyle
-	panes := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		m.outputViewport.View(),
-		m.lobbyViewport.View(),
+	if !m.ready {
+		return "Initializing..."
+	}
+	mainView := lipgloss.JoinVertical(
+		lipgloss.Left,
+		lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.outputViewport.View(),
+			m.lobbyViewport.View(),
+		),
+		inputStyle.Render(m.textinput.View()),
 	)
-
-	return lipgloss.JoinVertical(
-		lipgloss.Top,
-		panes,
-		textareaStyle.Render(m.textarea.View()),
-	)
+	return docStyle.Render(mainView)
 }
 
 type tuiWriter struct {

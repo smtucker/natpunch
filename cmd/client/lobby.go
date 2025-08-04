@@ -65,7 +65,7 @@ func (c *Client) leaveLobby() {
 
 func (c *Client) handleCreateLobbyResponse(resp *api.CreateLobbyResponse) {
 	if resp.Success {
-		fmt.Printf("✅ Lobby created successfully! Lobby ID: %s\n", resp.LobbyId)
+		log.Printf("✅ Lobby created successfully! Lobby ID: %s", resp.LobbyId)
 		c.lobbyMutex.Lock()
 		defer c.lobbyMutex.Unlock()
 		c.CurrentLobby = &LobbyInfo{

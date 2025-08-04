@@ -57,6 +57,8 @@ func (c *Client) register(localAddr *net.UDPAddr) error {
 		case <-time.After(RegReadTimeout):
 			log.Println("No registration response received, retrying...")
 			continue // Retry
+		case <-c.stop:
+			return fmt.Errorf("registration cancelled")
 		}
 	}
 	return fmt.Errorf("failed to register after %d attempts", MaxRegistrationAttempts)

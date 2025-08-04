@@ -32,6 +32,7 @@ type Client struct {
 	pubAddr          *net.UDPAddr
 	localAddr        *net.UDPAddr
 	stop             chan struct{}
+	stopOnce         sync.Once
 	wg               sync.WaitGroup
 	lobbyMutex       sync.RWMutex
 	id               string
@@ -226,11 +227,37 @@ func (c *Client) send(msg *api.Message) {
 }
 
 // Run starts the client.
-func (c *Client) Run(addr string, port string) {
+func (c *Client) Run() {
+	c.wg.Add(1)
+	go c.listen()
+
+	c.wg.Add(1)
+	go c.runTUI()
+
+	go func() {
+		if err := c.register(c.localAddr); err != nil {
+			log.Println("Error registering:", err)
+			c.stopClient()
+			return
+		}
+
+		c.wg.Add(1)
+		go c.keepAliveServer()
+	}()
+
+	<-c.stop
+	log.Println("Closing connection")
+
+	c.wg.Wait()
+	c.conn.Close()
+	log.Println("Client exited")
+}
+
+func (c *Client) Init(addr string, port string) error {
 	var err error
 	c.srvAddr, err = net.ResolveUDPAddr("udp", addr+":"+port)
 	if err != nil {
-		log.Fatalf("cannot resolve server address: %s", err)
+		return fmt.Errorf("cannot resolve server address: %w", err)
 	}
 
 	c.stop = make(chan struct{})
@@ -240,39 +267,19 @@ func (c *Client) Run(addr string, port string) {
 
 	c.conn, err = net.ListenUDP("udp", c.localAddr)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("cannot listen on UDP port: %w", err)
 	}
 
 	// Update local address with the port chosen by the OS
 	localAddrWithPort, ok := c.conn.LocalAddr().(*net.UDPAddr)
 	if !ok {
-		log.Fatalf("could not get local UDP address")
+		return fmt.Errorf("could not get local UDP address")
 	}
 	c.localAddr = localAddrWithPort
 
 	c.pendingPings = make(map[uint32]time.Time)
 	c.wg = sync.WaitGroup{}
-
-	c.wg.Add(1)
-	go c.listen()
-
-	if err := c.register(c.localAddr); err != nil {
-		log.Println("Error registering:", err)
-		return
-	}
-
-	c.wg.Add(1)
-	go c.runTUI()
-
-	c.wg.Add(1)
-	go c.keepAliveServer()
-
-	<-c.stop
-	log.Println("Closing connection")
-
-	c.wg.Wait()
-	c.conn.Close()
-	log.Println("Client exited")
+	return nil
 }
 
 func (c *Client) handleRegisterResponse(resp *api.RegisterResponse) {
@@ -413,7 +420,9 @@ func (c *Client) listLobbies() {
 }
 
 func (c *Client) stopClient() {
-	close(c.stop)
+	c.stopOnce.Do(func() {
+		close(c.stop)
+	})
 }
 
 func (c *Client) handleUnknownCommand(command string) {
@@ -435,11 +444,26 @@ func (c *Client) printHelp() {
 }
 
 func main() {
-	address := flag.String("a", "127.0.0.1", "Server address")
-	port := flag.String("p", "8080", "Port to use")
+	address := flag.String("a", "", "Server address")
+	port := flag.String("p", "", "Port to use")
 
 	flag.Parse()
 
 	client := &Client{}
-	client.Run(*address, *port)
+
+	if *address == "" || *port == "" {
+		form := newFormModel()
+		p := tea.NewProgram(form)
+		if _, err := p.Run(); err != nil {
+			log.Fatalf("could not run form: %s", err)
+		}
+
+		*address = form.inputs[0].Value()
+		*port = form.inputs[1].Value()
+	}
+
+	if err := client.Init(*address, *port); err != nil {
+		log.Fatalf("could not initialize client: %s", err)
+	}
+	client.Run()
 }

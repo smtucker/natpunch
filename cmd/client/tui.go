@@ -95,7 +95,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.outputViewport.Height = viewportsHeight
 
 		// The text input takes the full width of the window, minus the margins, borders, and padding of its container.
-		m.textinput.Width = msg.Width - docStyle.GetHorizontalFrameSize() - inputStyle.GetHorizontalFrameSize() - lipgloss.Width(m.textinput.Prompt)
+		m.textinput.Width = msg.Width - docStyle.GetHorizontalFrameSize() - inputStyle.GetHorizontalFrameSize() - lipgloss.Width(m.textinput.Prompt) - 1
 		if !m.ready {
 			m.ready = true
 		}
@@ -173,77 +173,56 @@ func (c *Client) runTUI() {
 
 	log.SetOutput(&tuiWriter{tui: p})
 
-	go c.statusUpdater()
+
 
 	if err := p.Start(); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func (c *Client) statusUpdater() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.stop:
-			return
-		case <-ticker.C:
-			if c.tui == nil {
-				return
-			}
-
-			c.lobbyMutex.RLock()
-			var sb strings.Builder
-			if c.CurrentLobby != nil {
-				fmt.Fprintf(&sb, "Lobby: %s\n", c.CurrentLobby.Name)
-				fmt.Fprintf(&sb, "ID: %s\n", c.CurrentLobby.ID)
-				fmt.Fprintf(&sb, "Host: %s\n", c.CurrentLobby.HostClientID)
-				fmt.Fprintf(&sb, "Players: %d/%d\n", c.CurrentLobby.CurrentPlayers, c.CurrentLobby.MaxPlayers)
-				fmt.Fprintln(&sb, "Members:")
-				for _, member := range c.CurrentLobby.Members {
-					fmt.Fprintf(&sb, "- %s\n", member.ClientId)
-				}
-				fmt.Fprintln(&sb, "Peers:")
-				for _, peer := range c.CurrentLobby.Peers {
-					fmt.Fprintf(&sb, "- %s: %s\n", peer.id, peer.addr)
-				}
-			} else {
-				fmt.Fprintln(&sb, "Available Lobbies:")
-				for _, lobby := range c.AvailableLobbies {
-					fmt.Fprintf(&sb, "- %s (%s) %d/%d\n", lobby.Name, lobby.ID, lobby.CurrentPlayers, lobby.MaxPlayers)
-				}
-			}
-			c.lobbyMutex.RUnlock()
-
-			c.tui.Send(lobbyUpdateMsg(sb.String()))
-		}
-	}
-}
 
 func (m model) updateStatusCmd() tea.Cmd {
 	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-		m.client.lobbyMutex.RLock()
-		defer m.client.lobbyMutex.RUnlock()
 		var sb strings.Builder
+
+		sb.WriteString("Client Info\n")
+		sb.WriteString("--------------------\n")
+		fmt.Fprintf(&sb, "Server: %s\n", m.client.srvAddr)
+		fmt.Fprintf(&sb, "GUID: %s\n", m.client.id)
+		if m.client.pubAddr != nil {
+			fmt.Fprintf(&sb, "Public Endpoint: %s\n", m.client.pubAddr)
+		}
+		if m.client.localAddr != nil {
+			fmt.Fprintf(&sb, "Local Endpoint: %s\n", m.client.localAddr)
+		}
+		sb.WriteString("\n")
+
+		m.client.lobbyMutex.RLock()
 		if m.client.CurrentLobby != nil {
+			sb.WriteString("Lobby Info\n")
+			sb.WriteString("--------------------\n")
 			fmt.Fprintf(&sb, "Lobby: %s\n", m.client.CurrentLobby.Name)
 			fmt.Fprintf(&sb, "ID: %s\n", m.client.CurrentLobby.ID)
 			fmt.Fprintf(&sb, "Host: %s\n", m.client.CurrentLobby.HostClientID)
 			fmt.Fprintf(&sb, "Players: %d/%d\n", m.client.CurrentLobby.CurrentPlayers, m.client.CurrentLobby.MaxPlayers)
 			fmt.Fprintln(&sb, "Members:")
-			for _, member := range m.client.CurrentLobby.Members {
-				fmt.Fprintf(&sb, "- %s\n", member.ClientId)
+			for i, member := range m.client.CurrentLobby.Members {
+				fmt.Fprintf(&sb, "- [%d] %s\n", i, member.ClientId)
 			}
 			fmt.Fprintln(&sb, "Peers:")
 			for _, peer := range m.client.CurrentLobby.Peers {
 				fmt.Fprintf(&sb, "- %s: %s\n", peer.id, peer.addr)
 			}
 		} else {
+			sb.WriteString("Lobby Info\n")
+			sb.WriteString("--------------------\n")
 			fmt.Fprintln(&sb, "Available Lobbies:")
 			for _, lobby := range m.client.AvailableLobbies {
 				fmt.Fprintf(&sb, "- %s (%s) %d/%d\n", lobby.Name, lobby.ID, lobby.CurrentPlayers, lobby.MaxPlayers)
 			}
 		}
+		m.client.lobbyMutex.RUnlock()
+
 		return lobbyUpdateMsg(sb.String())
 	})
 }
